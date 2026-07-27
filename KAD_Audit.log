@@ -3,3 +3,13 @@
 [2026-07-27 10:01:13] | Operador: a.riqborges | Acao: UpdateVetorh | Alvo: 26955 | Status: SUCESSO: LTU
 [2026-07-27 12:24:50] | Operador: a.riqborges | Acao: AlternarStatus | Alvo: PTU-DT-38859$ | Status: SUCESSO
 [2026-07-27 12:25:03] | Operador: a.riqborges | Acao: AlternarStatus | Alvo: PTU-DT-38859$ | Status: SUCESSO
+[2026-07-27 13:00:36] | Operador: a.riqborges | Acao: Diag_SPLUNK | Alvo: Riquelmy.Borges | Status: EXECUTADO
+[2026-07-27 13:11:53] | Operador: a.riqborges | Acao: Diag_PING | Alvo: PTU-DT-47774$ | Status: EXECUTADO
+[2026-07-27 13:12:13] | Operador: a.riqborges | Acao: Diag_WMI | Alvo: PTU-DT-47774$ | Status: EXECUTADO
+[2026-07-27 13:15:57] | Operador: a.riqborges | Acao: Diag_PING | Alvo: PTU-DT-47774$ | Status: EXECUTADO
+[2026-07-27 13:16:27] | Operador: a.riqborges | Acao: Diag_WMI | Alvo: PTU-DT-47774$ | Status: EXECUTADO
+[2026-07-27 13:18:37] | Operador: a.riqborges | Acao: Diag_PING | Alvo: ptu-prn-01 | Status: EXECUTADO
+[2026-07-27 13:35:21] | Operador: a.riqborges | Acao: Diag_PING | Alvo: 10.205.189.6 | Status: EXECUTADO
+[2026-07-27 13:56:12] | Operador: a.riqborges | Acao: ConsultarSeguranca | Alvo: PTU-DT-47774 | Status: LAPS/BitLocker extraídos
+[2026-07-27 14:19:10] | Operador: a.riqborges | Acao: ConsultarSeguranca | Alvo: PTU-DT-46768 | Status: LAPS/BitLocker extraídos
+[2026-07-27 16:23:01] | Operador: a.riqborges | Acao: Diag_SPLUNK | Alvo: Orlando.Braga | Status: EXECUTADO

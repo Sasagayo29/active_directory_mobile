@@ -34,6 +34,10 @@ export default function Dashboard() {
 
   // Novo: Modal de Confirmação Customizado
   const [confirmConfig, setConfirmConfig] = useState({ isOpen: false, title: '', message: '', action: null });
+  // Estados: Modal LAPS/BitLocker
+  const [modalSecurityOpen, setModalSecurityOpen] = useState(false);
+  const [securityData, setSecurityData] = useState({ laps: '', bitlocker: [] });
+  const [securityLoading, setSecurityLoading] = useState(false);
 
   // Estados: Terminal
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -152,6 +156,38 @@ export default function Dashboard() {
     });
   };
 
+  const runPrintDiagnostic = async (type) => {
+    if (!printServer) return;
+    setTerminalTitle(`Terminal | ${type.toUpperCase()} - ${printServer}`);
+    setTerminalContent(`[SYS] Iniciando varredura remota para ${printServer}...\n\n`);
+    setTerminalOpen(true); setTerminalLoading(true);
+    try {
+      const response = await api.get(`/diagnostics/${printServer}/${type}`);
+      setTerminalContent(prev => prev + response.data.output + '\n\n[SYS] Processo finalizado.');
+    } catch (err) { setTerminalContent(prev => prev + '\n[ERRO] Falha crítica de comunicação com o servidor.'); } 
+    finally { setTerminalLoading(false); }
+  };
+
+  const pingPrinter = async (printerName, portName) => {
+    // Extrai o IP caso a porta venha com prefixos (Ex: IP_10.205.99.50 vira 10.205.99.50)
+    const ipMatch = portName?.match(/\d{1,3}(\.\d{1,3}){3}/);
+    const targetIp = ipMatch ? ipMatch[0] : portName;
+
+    if (!targetIp) return toast.error('Porta TCP/IP não identificada.');
+
+    setTerminalTitle(`Terminal | PING - ${printerName} (${targetIp})`);
+    setTerminalContent(`[SYS] Disparando pacotes ICMP para ${targetIp}...\n\n`);
+    setTerminalOpen(true); setTerminalLoading(true);
+    try {
+      const response = await api.get(`/diagnostics/${targetIp}/ping`);
+      setTerminalContent(prev => prev + response.data.output + '\n\n[SYS] Processo finalizado.');
+    } catch (err) {
+      setTerminalContent(prev => prev + '\n[ERRO] Falha ao pingar a impressora.');
+    } finally {
+      setTerminalLoading(false);
+    }
+  };
+
   // ==================== DIAGNÓSTICOS ====================
   const runDiagnostic = async (type) => {
     const target = type === 'splunk' ? selectedUser.SamAccountName : (selectedUser.OS ? selectedUser.DisplayName : selectedUser.SamAccountName);
@@ -224,8 +260,32 @@ export default function Dashboard() {
 
   const fetchLocalGroups = async () => { 
     setLoadingGroups(true); 
-    try { const response = await api.get(`/computers/${selectedUser.SamAccountName}/local-groups`); setLocalGroups(response.data.data); toast.success('Grupos mapeados.'); } 
-    catch (err) { toast.error('Falha via WinRM. Computador inacessível.'); } finally { setLoadingGroups(false); } 
+    try { 
+      const response = await api.get(`/computers/${selectedUser.SamAccountName}/local-groups`); 
+      const dt = response.data.data;
+      // Garante que o frontend sempre receba um Array, evitando a quebra do .map()
+      const arr = Array.isArray(dt) ? dt : (dt ? [dt] : []);
+      setLocalGroups(arr); 
+      toast.success('Grupos mapeados.'); 
+    } catch (err) { 
+      toast.error(err.response?.data?.detail || 'Falha via WinRM. Computador inacessível.'); 
+    } finally { 
+      setLoadingGroups(false); 
+    } 
+  };
+
+  const fetchSecurityKeys = async () => {
+    setModalSecurityOpen(true);
+    setSecurityLoading(true);
+    try {
+      const response = await api.get(`/computers/${selectedUser.SamAccountName}/security`);
+      setSecurityData(response.data);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Acesso negado ou erro ao ler chaves.');
+      setModalSecurityOpen(false);
+    } finally {
+      setSecurityLoading(false);
+    }
   };
 
   const isUser = selectedUser?.Type === 'User';
@@ -273,18 +333,34 @@ export default function Dashboard() {
 
             {searchResults.length > 1 && !selectedUser && (
               <div>
+                <div style={styles.listGrid}>
+                  {searchResults.length > 1 && !selectedUser && (
+              <div>
                 <p style={{ color: COLORS.gold, marginBottom: '15px', fontWeight: 'bold' }}>Resultados da pesquisa ({searchResults.length}):</p>
                 <div style={styles.listGrid}>
-                  {searchResults.map((item, idx) => (
-                    <div key={idx} onClick={() => selectUserForDetail(item)} style={styles.miniCard}>
-                      <div style={styles.miniAvatar}>{renderIcon(item.Type)}</div>
-                      <div style={{ flex: 1 }}>
-                        <h4 style={styles.miniCardTitle}>{item.DisplayName}</h4>
-                        <p style={styles.miniCardSubtitle}>{item.SamAccountName} {item.EmployeeID ? `• Mat: ${item.EmployeeID}` : ''}</p>
+                  {searchResults.map((item, idx) => {
+                    const isDanger = !item.Enabled || item.LockedOut;
+                    
+                    return (
+                    <div key={idx} onClick={() => selectUserForDetail(item)} style={{...styles.miniCard, borderColor: isDanger ? COLORS.danger : COLORS.border}}>
+                      <div style={{...styles.miniAvatar, color: isDanger ? COLORS.danger : COLORS.gold, backgroundColor: isDanger ? 'rgba(239, 68, 68, 0.1)' : COLORS.cell}}>
+                        {renderIcon(item.Type)}
                       </div>
-                      <div style={{ color: COLORS.gold }}><ArrowRight size={18} /></div>
+                      <div style={{ flex: 1 }}>
+                        <h4 style={{...styles.miniCardTitle, color: isDanger ? COLORS.danger : COLORS.text}}>
+                           {item.DisplayName} {isDanger && <Ban size={12} style={{marginLeft: '6px'}} />}
+                        </h4>
+                        <p style={styles.miniCardSubtitle}>
+                           {item.SamAccountName} {item.EmployeeID ? `• Mat: ${item.EmployeeID}` : ''}
+                           {isDanger && <span style={{color: COLORS.danger, fontWeight: 'bold'}}> • ({item.LockedOut ? 'Bloqueado' : 'Desativado'})</span>}
+                        </p>
+                      </div>
+                      <div style={{ color: isDanger ? COLORS.danger : COLORS.gold }}><ArrowRight size={18} /></div>
                     </div>
-                  ))}
+                  )})}
+                </div>
+              </div>
+            )}
                 </div>
               </div>
             )}
@@ -310,30 +386,112 @@ export default function Dashboard() {
 
                 <div style={styles.innerTabs}>
                   <button style={innerTab === 'geral' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('geral')}>Geral</button>
-                  <button style={innerTab === 'seguranca' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('seguranca')}>Segurança</button>
-                  {(isUser || isComputer) && <button style={innerTab === 'grupos' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('grupos')}>Grupos ({selectedUser.MemberOf?.length || 0})</button>}
+                  {isUser && <button style={innerTab === 'seguranca' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('seguranca')}>Segurança</button>}
+                  {isComputer && <button style={innerTab === 'seguranca' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('seguranca')}>Diagnósticos</button>}
+                  
+                  {/* Botão Dinâmico de Relacionamentos (Grupos vs Membros) */}
+                  <button style={innerTab === 'grupos' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('grupos')}>
+                    {isGroup ? `Membros (${selectedUser.Members?.length || 0})` : `Grupos (${selectedUser.MemberOf?.length || 0})`}
+                  </button>
+                  
                   {isUser && selectedUser.EmployeeID && <button style={innerTab === 'vetorh' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('vetorh')}>Vetorh DB</button>}
                 </div>
 
                 <div style={styles.innerContent}>
+                  
+                  {/* ======================= ABA GERAL ======================= */}
                   {innerTab === 'geral' && (
-                    <div style={styles.detailGrid}>
-                      <div style={styles.detailItemFull}><span style={styles.detailLabel}>E-mail</span><span style={styles.detailValue}>{selectedUser.EmailAddress || 'N/A'}</span></div>
-                      {isUser && <div style={styles.detailItem}><span style={styles.detailLabel}>Telefone</span><span style={styles.detailValue}>{selectedUser.TelephoneNumber || 'N/A'}</span></div>}
-                      {isUser && <div style={styles.detailItem}><span style={styles.detailLabel}>Cargo</span><span style={styles.detailValue}>{selectedUser.Title || 'N/A'}</span></div>}
-                      {isUser && <div style={styles.detailItemFull}><span style={styles.detailLabel}>Acesso Vetorh (TechAcc)</span><span style={{...styles.detailValue, color: COLORS.gold}}>{vetorhStatus}</span></div>}
-                      {(isComputer || isGroup) && <div style={styles.detailItem}><span style={styles.detailLabel}>Descrição</span><span style={styles.detailValue}>{selectedUser.Description || 'N/A'}</span></div>}
-                      {isComputer && <div style={styles.detailItem}><span style={styles.detailLabel}>S. Operacional</span><span style={styles.detailValue}>{selectedUser.OS || 'N/A'}</span></div>}
-                      <div style={styles.detailItemFull}><span style={styles.detailLabel}>Caminho de Diretório (DN)</span><span style={styles.detailValueMicro}>{selectedUser.DN}</span></div>
-                    </div>
+                    <>
+                      {/* VISTA: COMPUTADOR */}
+                      {isComputer && (
+                        <>
+                          <p style={styles.sectionLabel}>Identificação de Rede</p>
+                          <div style={styles.detailGrid}>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>DNS</span><span style={styles.detailValue}>{selectedUser.DNS}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>IPv4</span><span style={styles.detailValue}>{selectedUser.IPv4}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>S. Operacional</span><span style={styles.detailValue}>{selectedUser.OS}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Gerenciado Por</span><span style={styles.detailValue}>{selectedUser.Manager}</span></div>
+                            <div style={styles.detailItemFull}><span style={styles.detailLabel}>Descrição</span><span style={styles.detailValue}>{selectedUser.Description}</span></div>
+                            <div style={styles.detailItemFull}><span style={styles.detailLabel}>Última Ativação</span><span style={styles.detailValue}>{selectedUser.LastLogon}</span></div>
+                          </div>
+                        </>
+                      )}
+
+                      {/* VISTA: USUÁRIO */}
+                      {isUser && (
+                        <>
+                          <p style={styles.sectionLabel}>Organização Corporativa</p>
+                          <div style={styles.detailGrid}>
+                            <div style={styles.detailItemFull}><span style={styles.detailLabel}>E-mail</span><span style={styles.detailValue}>{selectedUser.EmailAddress || 'N/A'}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Telefone</span><span style={styles.detailValue}>{selectedUser.TelephoneNumber}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Cargo</span><span style={styles.detailValue}>{selectedUser.Title}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Departamento</span><span style={styles.detailValue}>{selectedUser.Department}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Empresa</span><span style={styles.detailValue}>{selectedUser.Company}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Escritório</span><span style={styles.detailValue}>{selectedUser.Office}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Gerente Direto</span><span style={styles.detailValue}>{selectedUser.Manager}</span></div>
+                            <div style={styles.detailItemFull}><span style={styles.detailLabel}>Supervisiona ({selectedUser.DirectReports?.length || 0})</span><span style={styles.detailValue}>{selectedUser.DirectReports?.length > 0 ? selectedUser.DirectReports.join(', ') : 'Nenhum'}</span></div>
+                          </div>
+                          
+                          <p style={{...styles.sectionLabel, marginTop: '20px'}}>Identidade e Acessos</p>
+                          <div style={styles.detailGrid}>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Status da Conta</span><span style={{...styles.detailValue, color: selectedUser.Enabled ? COLORS.success : COLORS.danger}}>{selectedUser.Enabled ? 'Ativa' : 'Desativada'}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Bloqueado?</span><span style={{...styles.detailValue, color: selectedUser.LockedOut ? COLORS.warning : COLORS.text}}>{selectedUser.LockedOut ? 'Sim' : 'Não'}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Senha Nunca Expira?</span><span style={styles.detailValue}>{selectedUser.PasswordNeverExpires ? 'Sim' : 'Não'}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Pode Alterar Senha?</span><span style={{...styles.detailValue, color: COLORS.muted}}>N/A (Via AD ACLs)</span></div>
+                            <div style={styles.detailItemFull}><span style={styles.detailLabel}>Último Logon</span><span style={styles.detailValue}>{selectedUser.LastLogon}</span></div>
+                            <div style={styles.detailItemFull}><span style={styles.detailLabel}>Acesso Vetorh</span><span style={{...styles.detailValue, color: COLORS.gold}}>{vetorhStatus}</span></div>
+                          </div>
+                        </>
+                      )}
+
+                      {/* VISTA: GRUPO */}
+                      {isGroup && (
+                        <>
+                          <p style={styles.sectionLabel}>Especificações do Grupo</p>
+                          <div style={styles.detailGrid}>
+                            <div style={styles.detailItemFull}><span style={styles.detailLabel}>Nome (Display)</span><span style={styles.detailValue}>{selectedUser.DisplayName}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Categoria (Cat)</span><span style={styles.detailValue}>{selectedUser.GroupCategory}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Escopo</span><span style={styles.detailValue}>{selectedUser.GroupScope}</span></div>
+                            <div style={styles.detailItem}><span style={styles.detailLabel}>Gerenciado Por</span><span style={styles.detailValue}>{selectedUser.Manager}</span></div>
+                            <div style={styles.detailItemFull}><span style={styles.detailLabel}>Descrição</span><span style={styles.detailValue}>{selectedUser.Description}</span></div>
+                          </div>
+                        </>
+                      )}
+
+                      {/* METADADOS COMUNS (RENDERIZADOS PARA TODOS) */}
+                      <p style={{...styles.sectionLabel, marginTop: '20px'}}>Metadados de Diretório</p>
+                      <div style={styles.detailGrid}>
+                        <div style={styles.detailItemFull}><span style={styles.detailLabel}>Nome Canônico (DN)</span><span style={styles.detailValueMicro}>{selectedUser.DN}</span></div>
+                        <div style={styles.detailItem}><span style={styles.detailLabel}>Classe do Objeto</span><span style={styles.detailValue}>{selectedUser.ObjectClass}</span></div>
+                        <div style={styles.detailItem}><span style={styles.detailLabel}>Criado em</span><span style={styles.detailValue}>{selectedUser.Created}</span></div>
+                        <div style={styles.detailItem}><span style={styles.detailLabel}>Modificado em</span><span style={styles.detailValue}>{selectedUser.Modified}</span></div>
+                        <div style={styles.detailItem}><span style={styles.detailLabel}>USN (Original)</span><span style={styles.detailValue}>{selectedUser.USNCreated}</span></div>
+                        <div style={styles.detailItem}><span style={styles.detailLabel}>USN (Atual)</span><span style={styles.detailValue}>{selectedUser.USNChanged}</span></div>
+                      </div>
+                    </>
+                  )}
+                  {/* ======================================================== */}
+
+                  {/* ================= ABA DE RELACIONAMENTOS ================= */}
+                  {innerTab === 'grupos' && (
+                     <div style={styles.listContainer}>
+                       {isGroup ? (
+                         selectedUser.Members?.length === 0 ? <p style={styles.hintText}>Nenhum membro neste grupo.</p> : selectedUser.Members.map((m, i) => <div key={i} style={styles.listItem}><User size={14} style={{marginRight: '8px', color: COLORS.muted}}/> {m}</div>)
+                       ) : (
+                         selectedUser.MemberOf?.length === 0 ? <p style={styles.hintText}>Nenhum relacionamento encontrado.</p> : selectedUser.MemberOf.map((g, i) => <div key={i} style={styles.listItem}><Users size={14} style={{marginRight: '8px', color: COLORS.muted}}/> {g}</div>)
+                       )}
+                     </div>
                   )}
 
+                  {/* ================= ABA DE SEGURANÇA / DIAGNÓSTICO ================= */}
                   {innerTab === 'seguranca' && (
                     <div style={styles.actionSection}>
+                      
                       <div style={styles.actionsGrid}>
                         {isUser && <button onClick={() => setModalEditOpen(true)} style={styles.gridBtn}><Settings size={14} /> Editar Perfil</button>}
                         {(isUser || isComputer) && <button onClick={openMoveModal} style={styles.gridBtn}><Server size={14} /> Mover OU</button>}
                         {isComputer && <button onClick={fetchLocalGroups} disabled={loadingGroups} style={styles.gridBtn}>{loadingGroups ? 'Processando...' : <><Users size={14}/> Grupos Locais</>}</button>}
+                        {isComputer && <button onClick={fetchSecurityKeys} style={{...styles.gridBtn, borderColor: COLORS.success, color: COLORS.success, fontWeight: 'bold'}}><Unlock size={14}/> LAPS & BitLocker</button>}
                       </div>
 
                       <p style={styles.sectionLabel}>Telemetria e Diagnósticos</p>
@@ -367,12 +525,7 @@ export default function Dashboard() {
                     </div>
                   )}
 
-                  {innerTab === 'grupos' && (
-                     <div style={styles.listContainer}>
-                       {selectedUser.MemberOf?.length === 0 ? <p style={styles.hintText}>Nenhum relacionamento encontrado.</p> : selectedUser.MemberOf.map((g, i) => <div key={i} style={styles.listItem}><Users size={14} style={{marginRight: '8px', color: COLORS.muted}}/> {g}</div>)}
-                     </div>
-                  )}
-
+                  {/* ================= ABA VETORH ================= */}
                   {innerTab === 'vetorh' && (
                      <div style={styles.actionSection}>
                        {vetorhLoading ? <p style={styles.hintText}>Sincronizando com SQL Server...</p> : (
@@ -479,25 +632,108 @@ export default function Dashboard() {
 
             {printersList.length > 0 && (
               <>
-                <button onClick={restartSpooler} style={{...styles.actionBtnWarning, width: '100%', marginBottom: '15px', display: 'flex', justifyContent: 'center', gap: '8px'}}><RefreshCw size={16}/> Reiniciar Spooler do Servidor</button>
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', flexWrap: 'wrap' }}>
+  <button onClick={restartSpooler} style={{...styles.actionBtnWarning, flex: 1, display: 'flex', justifyContent: 'center', gap: '8px'}}>
+    <RefreshCw size={16}/> Spooler
+  </button>
+  <button onClick={() => runPrintDiagnostic('ping')} style={{...styles.diagBtn, flex: 1, display: 'flex', justifyContent: 'center', gap: '8px'}}>
+    <Activity size={16}/> Ping
+  </button>
+  <button onClick={() => runPrintDiagnostic('wmi')} style={{...styles.diagBtn, flex: 1, display: 'flex', justifyContent: 'center', gap: '8px'}}>
+    <BarChart size={16}/> WMI
+  </button>
+</div>
                 <div style={styles.listGrid}>
-                  {printersList.map((prn, idx) => (
-                    <div key={idx} style={{...styles.miniCard, flexDirection: 'column', alignItems: 'flex-start', cursor: 'default'}}>
-                      <div style={{display: 'flex', justifyContent: 'space-between', width: '100%'}}>
-                        <h4 style={styles.miniCardTitle}><Printer size={14}/> {prn.Name}</h4>
-                        <span style={{color: COLORS.muted, fontSize: '12px'}}>{prn.JobCount} jobs</span>
-                      </div>
-                      <p style={styles.miniCardSubtitle}>{prn.DriverName}</p>
-                      <p style={styles.miniCardText}>{prn.PortName} | Status: {prn.PrinterStatus?.Value || prn.PrinterStatus}</p>
-                      <button onClick={() => clearQueue(prn.Name)} style={{...styles.gridBtn, marginTop: '10px', width: '100%', borderColor: COLORS.warning, color: COLORS.warning, display: 'flex', justifyContent: 'center', gap: '8px'}}><Trash2 size={14}/> Limpar Fila</button>
-                    </div>
-                  ))}
-                </div>
+  {printersList.map((prn, idx) => (
+    <div key={idx} style={{...styles.card, padding: '15px', cursor: 'default'}}>
+      
+      {/* Cabeçalho da Impressora */}
+      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '15px'}}>
+        <div>
+          <h4 style={{...styles.cardTitle, fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px'}}>
+            <Printer size={16}/> {prn.Name}
+          </h4>
+          <p style={styles.miniCardSubtitle}>{prn.DriverName}</p>
+        </div>
+        <span style={{backgroundColor: COLORS.cell, padding: '4px 8px', borderRadius: '4px', fontSize: '12px', color: COLORS.gold, border: `1px solid ${COLORS.border}`, fontWeight: 'bold'}}>
+          {prn.JobCount} docs
+        </span>
+      </div>
+      
+      {/* Detalhes Extraídos (Como no Desktop) */}
+      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px'}}>
+         <div style={styles.detailItem}>
+           <span style={styles.detailLabel}>Porta / IP</span>
+           <span style={styles.detailValue}>{prn.PortName || 'N/A'}</span>
+         </div>
+         <div style={styles.detailItem}>
+           <span style={styles.detailLabel}>Status Físico</span>
+           <span style={styles.detailValue}>{prn.PrinterStatus?.Value || prn.PrinterStatus || 'Normal'}</span>
+         </div>
+         <div style={styles.detailItemFull}>
+           <span style={styles.detailLabel}>Localização</span>
+           <span style={styles.detailValue}>{prn.Location || 'Não informada no AD'}</span>
+         </div>
+      </div>
+
+      {/* Botões de Ação Individual */}
+      <div style={{display: 'flex', gap: '10px'}}>
+        <button onClick={() => pingPrinter(prn.Name, prn.PortName)} style={{...styles.gridBtn, flex: 1, borderColor: '#38BDF8', color: '#38BDF8'}}>
+          <Activity size={14}/> Ping
+        </button>
+        <button onClick={() => clearQueue(prn.Name)} style={{...styles.gridBtn, flex: 1, borderColor: COLORS.warning, color: COLORS.warning}}>
+          <Trash2 size={14}/> Limpar Fila
+        </button>
+      </div>
+
+    </div>
+  ))}
+</div>
               </>
             )}
           </div>
         )}
       </div>
+
+      {/* MODAL: VISOR LAPS E BITLOCKER */}
+      {modalSecurityOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={{...styles.modalContent, maxWidth: '500px'}}>
+            <h3 style={{color: COLORS.gold, margin: '0 0 15px 0', display: 'flex', alignItems: 'center', gap: '8px'}}><Unlock size={18}/> Chaves de Criptografia</h3>
+            {securityLoading ? (
+              <div style={{display: 'flex', alignItems: 'center', gap: '10px', color: COLORS.gold, padding: '20px 0'}}>
+                <div style={styles.spinner}></div> <p>Descriptografando atributos de segurança do AD...</p>
+              </div>
+            ) : (
+              <>
+                <div style={styles.resetContainer}>
+                  <p style={styles.sectionLabel}>Senha Local Admin (LAPS)</p>
+                  <input type="text" readOnly value={securityData.laps} style={{...styles.modalInput, color: COLORS.success, fontWeight: 'bold', fontSize: '18px', letterSpacing: '1px', textAlign: 'center'}} />
+                </div>
+                
+                <div style={{...styles.resetContainer, marginTop: '15px'}}>
+                  <p style={styles.sectionLabel}>Recovery Keys (BitLocker)</p>
+                  {securityData.bitlocker.length === 0 ? (
+                     <p style={styles.hintText}>Nenhuma chave de recuperação armazenada no diretório para este ativo.</p>
+                  ) : (
+                     <div style={{maxHeight: '180px', overflowY: 'auto'}}>
+                       {securityData.bitlocker.map((bk, idx) => (
+                         <div key={idx} style={{backgroundColor: COLORS.bg, padding: '12px', borderRadius: '4px', marginBottom: '10px', border: `1px solid ${COLORS.border}`}}>
+                           <p style={{margin: '0 0 6px 0', fontSize: '11px', color: COLORS.muted}}>Backup gerado em: {bk.date}</p>
+                           <p style={{margin: 0, fontSize: '14px', color: COLORS.text, fontFamily: 'monospace', userSelect: 'all'}}>{bk.key}</p>
+                         </div>
+                       ))}
+                     </div>
+                  )}
+                </div>
+              </>
+            )}
+            <div style={styles.modalActions}>
+              <button onClick={() => setModalSecurityOpen(false)} style={styles.modalCancelBtn}>Fechar Visor Seguro</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL: CONFIRMAÇÃO GENÉRICA (Substitui window.confirm) */}
       {confirmConfig.isOpen && (
