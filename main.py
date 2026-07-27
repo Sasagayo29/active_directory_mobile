@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +8,7 @@ from datetime import datetime, timedelta
 import subprocess
 import json
 import pyodbc
+import ldap3 # Certifique-se de que isso está no topo do seu main.py
 from ldap3 import Server, Connection, ALL, SUBTREE
 
 app = FastAPI(title="KAD Mobile API - Módulo Avançado AD com Auditoria")
@@ -99,26 +101,32 @@ def get_ldap_connection(creds: dict):
 
 # --- MOTOR DE POWERSHELL DINÂMICO ---
 def run_powershell(command: str, creds: dict, return_json: bool = True):
+    # 1. Quebra a 'bolha' da API e puxa as variáveis globais da máquina root
+    # 2. Força a importação do módulo AD parando o script imediatamente se falhar
     auth_prefix = (
+        f"$env:PSModulePath = [System.Environment]::GetEnvironmentVariable('PSModulePath', 'Machine'); "
+        f"Import-Module ActiveDirectory -ErrorAction Stop; "
         f"$secpasswd = ConvertTo-SecureString '{creds['password']}' -AsPlainText -Force; "
         f"$mycreds = New-Object System.Management.Automation.PSCredential ('KinrossGold\\{creds['username']}', $secpasswd); "
     )
     
-    # Se o retorno for JSON, adiciona a conversão aqui no final de forma segura
     suffix = " | ConvertTo-Json -Compress -Depth 5" if return_json else ""
     full_command = f"{auth_prefix} {command} {suffix}"
     
+    # 3. Garante execução em 64-bits mesmo se o Python da API for 32-bits
+    ps_exec = r"C:\Windows\sysnative\WindowsPowerShell\v1.0\powershell.exe"
+    if not os.path.exists(ps_exec):
+        ps_exec = "powershell.exe"
+        
     try:
-        # cp850 garante que acentuações do terminal do Windows não travem o Python
         result = subprocess.run(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-NoProfile", "-Command", full_command],
+            [ps_exec, "-ExecutionPolicy", "Bypass", "-NoProfile", "-Command", full_command],
             capture_output=True, text=True, encoding='cp850', errors='replace'
         )
         
-        # Se o PowerShell der erro (WinRM, Acesso Negado, Máquina Offline), ele devolve 400 COM a mensagem
         if result.returncode != 0:
             erro_real = result.stderr.strip() if result.stderr else result.stdout.strip()
-            raise HTTPException(status_code=400, detail=f"Erro no WinRM: {erro_real}")
+            raise HTTPException(status_code=400, detail=f"Erro no WinRM/AD: {erro_real}")
             
         stdout_str = result.stdout.strip()
         
@@ -128,11 +136,11 @@ def run_powershell(command: str, creds: dict, return_json: bool = True):
         try:
             return json.loads(stdout_str)
         except json.JSONDecodeError:
-            return stdout_str # Fallback caso o retorno não seja parseável
+            return stdout_str 
             
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=400, detail=f"Falha de execução: {str(e)}")
-
+        raise HTTPException(status_code=400, detail=f"Falha de execução do Processo: {str(e)}")
+    
 # --- ENDPOINTS BÁSICOS E BUSCA ---
 
 @app.post("/token", response_model=Token)
@@ -235,15 +243,32 @@ def get_user(search_term: str, creds: dict = Depends(get_current_credentials)):
 
 @app.post("/users/{username}/toggle-status")
 def toggle_account_status(username: str, creds: dict = Depends(get_current_credentials)):
-    script = (
-        f"$u = Get-ADUser -Identity '{username}' -ErrorAction SilentlyContinue; "
-        f"if (-not $u) {{ $u = Get-ADComputer -Identity '{username}' }}; "
-        f"if ($u.Enabled) {{ Disable-ADAccount -Identity $u -Credential $mycreds }} "
-        f"else {{ Enable-ADAccount -Identity $u -Credential $mycreds }}"
-    )
-    run_powershell(script, creds)
-    AuditLogger.log(creds["username"], "AlternarStatus", username, "SUCESSO")
-    return {"message": "Status alterado com sucesso."}
+    conn = get_ldap_connection(creds)
+    try:
+        # Busca o objeto (Usuário ou Computador) e seu atributo de controle
+        conn.search(AD_SEARCH_BASE, f"(sAMAccountName={username})", attributes=['userAccountControl'])
+        
+        if not conn.entries:
+            raise HTTPException(status_code=404, detail="Objeto não encontrado no AD.")
+            
+        entry = conn.entries[0]
+        uac = entry.userAccountControl.value if 'userAccountControl' in entry else 512
+        
+        # Matemática Binária (Bitwise): 
+        # O bit '2' representa a conta desativada no Windows.
+        is_disabled = bool(uac & 2)
+        new_uac = (uac & ~2) if is_disabled else (uac | 2)
+        
+        # Modifica instantaneamente via rede (dispensa totalmente o PowerShell)
+        success = conn.modify(entry.entry_dn, {'userAccountControl': [(ldap3.MODIFY_REPLACE, [new_uac])]})
+        
+        if not success:
+            raise HTTPException(status_code=400, detail=f"Bloqueado pelo AD: {conn.result['description']}")
+            
+        AuditLogger.log(creds["username"], "AlternarStatus", username, "SUCESSO")
+        return {"message": "Status alterado com sucesso."}
+    finally:
+        conn.unbind()
 
 @app.post("/users/{username}/edit-profile")
 def edit_profile(username: str, payload: ProfileEdit, creds: dict = Depends(get_current_credentials)):

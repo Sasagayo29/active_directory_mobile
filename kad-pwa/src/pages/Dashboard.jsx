@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import toast, { Toaster } from 'react-hot-toast';
 import { 
   User, Monitor, Users, Search, Layers, Scale, Database, Printer, 
   CheckCircle, Ban, Unlock, Activity, BarChart, ArrowRight, ArrowLeft, 
@@ -23,13 +24,16 @@ export default function Dashboard() {
   const [localGroups, setLocalGroups] = useState(null);
   const [loadingGroups, setLoadingGroups] = useState(false);
 
-  // Estados: Modais
+  // Estados: Modais e Confirmações
   const [modalEditOpen, setModalEditOpen] = useState(false);
   const [editData, setEditData] = useState({ title: '', department: '', telephone: '' });
   const [modalMoveOpen, setModalMoveOpen] = useState(false);
   const [ouList, setOuList] = useState([]);
   const [selectedOu, setSelectedOu] = useState('');
   const [loadingOus, setLoadingOus] = useState(false);
+
+  // Novo: Modal de Confirmação Customizado
+  const [confirmConfig, setConfirmConfig] = useState({ isOpen: false, title: '', message: '', action: null });
 
   // Estados: Terminal
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -58,6 +62,16 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const handleLogout = () => { localStorage.removeItem('@kad_token'); navigate('/'); };
 
+  // Helper para chamar o Modal de Confirmação
+  const showConfirm = (title, message, action) => {
+    setConfirmConfig({ isOpen: true, title, message, action });
+  };
+
+  const handleConfirmAction = () => {
+    if (confirmConfig.action) confirmConfig.action();
+    setConfirmConfig({ ...confirmConfig, isOpen: false });
+  };
+
   // ==================== FUNÇÕES CORE AD ====================
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
@@ -74,8 +88,6 @@ export default function Dashboard() {
   const selectUserForDetail = (user) => {
     setSelectedUser(user);
     setEditData({ title: user.Title || '', department: user.Department || '', telephone: user.TelephoneNumber || '' });
-    
-    // Reset preventivo para garantir que seletores não herdem cache de usuários anteriores
     setVetorhData({ tipcol: 1, techacc: 'NTU' });
 
     if (user.Type === 'User' && user.EmployeeID) {
@@ -87,16 +99,11 @@ export default function Dashboard() {
           const fetchedTechacc = res.data.techacc ? res.data.techacc.trim().toUpperCase() : 'NTU';
           const tipoStr = fetchedTipcol === 1 ? 'Próprio' : 'Terceiro';
           
-          // Correção Aplicada: Força a atualização do estado dos seletores visuais
           setVetorhData({ tipcol: fetchedTipcol, techacc: fetchedTechacc });
 
-          if (res.data.error) {
-            setVetorhStatus(`Erro: ${res.data.error}`);
-          } else if (res.data.message) {
-            setVetorhStatus(res.data.message);
-          } else {
-            setVetorhStatus(`${fetchedTechacc} (${tipoStr})`);
-          }
+          if (res.data.error) setVetorhStatus(`Erro: ${res.data.error}`);
+          else if (res.data.message) setVetorhStatus(res.data.message);
+          else setVetorhStatus(`${fetchedTechacc} (${tipoStr})`);
         })
         .catch(() => setVetorhStatus('Falha de conexão com SQL'))
         .finally(() => setVetorhLoading(false));
@@ -110,9 +117,10 @@ export default function Dashboard() {
     setVetorhLoading(true);
     try {
       await api.post('/vetorh/update', { matriculas: [selectedUser.EmployeeID], tipcol: vetorhData.tipcol, techacc: vetorhData.techacc });
-      alert('Integração com Vetorh executada com sucesso.');
+      toast.success('Integração com Vetorh executada com sucesso.');
       setVetorhStatus(`${vetorhData.techacc} (${vetorhData.tipcol === 1 ? 'Próprio' : 'Terceiro'})`);
-    } catch (err) { alert('Falha ao atualizar banco de dados.'); } finally { setVetorhLoading(false); }
+    } catch (err) { toast.error(err.response?.data?.detail || 'Falha ao atualizar banco de dados.'); } 
+    finally { setVetorhLoading(false); }
   };
 
   // ==================== IMPRESSORAS ====================
@@ -123,27 +131,25 @@ export default function Dashboard() {
     try {
       const response = await api.get(`/printers/${printServer}`);
       const dadosRetorno = response.data.data;
-      
-      // Tratamento extra caso o array venha vazio ou com um só objeto
       const dataArray = Array.isArray(dadosRetorno) ? dadosRetorno : (dadosRetorno ? [dadosRetorno] : []);
       setPrintersList(dataArray);
-      
-    } catch (err) { 
-      // Agora o celular te mostra exatamente o porquê do erro WinRM
-      alert(err.response?.data?.detail || 'Falha ao comunicar com o servidor de impressão.'); 
-    } finally { 
-      setPrintersLoading(false); 
-    }
+      if(dataArray.length === 0) toast.error('Nenhuma impressora encontrada.');
+    } catch (err) { toast.error(err.response?.data?.detail || 'Falha ao comunicar com o servidor.'); } 
+    finally { setPrintersLoading(false); }
   };
 
-  const clearQueue = async (queue) => {
-    if(!window.confirm(`Esvaziar a fila ${queue}?`)) return;
-    try { await api.post(`/printers/${printServer}/${queue}/clear`); alert('Fila limpa.'); } catch (err) { alert('Erro na operação.'); }
+  const clearQueue = (queue) => {
+    showConfirm('Limpar Fila de Impressão', `Tem certeza que deseja remover todos os documentos travados na fila ${queue}?`, async () => {
+      try { await api.post(`/printers/${printServer}/${queue}/clear`); toast.success('Fila de impressão esvaziada.'); } 
+      catch (err) { toast.error(err.response?.data?.detail || 'Erro ao limpar fila.'); }
+    });
   };
 
-  const restartSpooler = async () => {
-    if(!window.confirm(`Reiniciar o Spooler em ${printServer} derrubará conexões ativas. Confirmar?`)) return;
-    try { await api.post(`/printers/${printServer}/restart-spooler`); alert('Serviço reiniciado.'); } catch (err) { alert('Erro na operação.'); }
+  const restartSpooler = () => {
+    showConfirm('Reiniciar Serviço de Spooler', `Atenção: Reiniciar o Spooler em ${printServer} derrubará conexões ativas momentaneamente. Prosseguir?`, async () => {
+      try { await api.post(`/printers/${printServer}/restart-spooler`); toast.success('Serviço de Spooler reiniciado remotamente.'); } 
+      catch (err) { toast.error(err.response?.data?.detail || 'Erro na operação remota.'); }
+    });
   };
 
   // ==================== DIAGNÓSTICOS ====================
@@ -162,39 +168,65 @@ export default function Dashboard() {
   // ==================== COMPARADOR E LOTE ====================
   const handleCompare = async () => {
     const usersArray = compareInput.split(',').map(u => u.trim()).filter(u => u !== '');
-    if (usersArray.length < 2) return alert('Requer mínimo de 2 identidades.');
+    if (usersArray.length < 2) return toast.error('Requer mínimo de 2 identidades para comparação.');
     setCompareLoading(true); setCompareResult(null);
-    try { const response = await api.post('/compare', { usernames: usersArray }); setCompareResult(response.data); } 
-    catch (err) { alert('Erro na matriz de comparação.'); } finally { setCompareLoading(false); }
+    try { const response = await api.post('/compare', { usernames: usersArray }); setCompareResult(response.data); toast.success('Matriz gerada com sucesso.'); } 
+    catch (err) { toast.error('Erro ao cruzar os dados de permissão.'); } finally { setCompareLoading(false); }
   };
 
-  const handleBulkAction = async (actionType) => {
+  const handleBulkAction = (actionType) => {
     const usersArray = bulkInput.split(',').map(u => u.trim()).filter(u => u !== '');
-    if (usersArray.length === 0) return; if (!window.confirm(`Processar transação em lote?`)) return;
-    setBulkLoading(true); setBulkResult(null);
-    try { const response = await api.post(`/bulk/${actionType}`, { usernames: usersArray }); setBulkResult(response.data); } 
-    catch (err) { alert('Erro na transação.'); } finally { setBulkLoading(false); }
+    if (usersArray.length === 0) return toast.error('Insira os identificadores antes de continuar.');
+    
+    showConfirm('Processamento em Lote', `Deseja executar a ação em massa para ${usersArray.length} objeto(s)?`, async () => {
+      setBulkLoading(true); setBulkResult(null);
+      try { const response = await api.post(`/bulk/${actionType}`, { usernames: usersArray }); setBulkResult(response.data); toast.success('Lote finalizado.'); } 
+      catch (err) { toast.error('Falha crítica ao processar o lote.'); } finally { setBulkLoading(false); }
+    });
   };
 
   // ==================== AÇÕES BÁSICAS AD ====================
-  const handleUnlock = async () => { try { await api.post(`/users/${selectedUser.SamAccountName}/unlock`); alert('Desbloqueado.'); handleSearch(); } catch (err) { alert('Erro.'); } };
+  const handleUnlock = async () => { 
+    try { await api.post(`/users/${selectedUser.SamAccountName}/unlock`); toast.success('Conta desbloqueada com sucesso.'); handleSearch(); } 
+    catch (err) { toast.error(err.response?.data?.detail || 'Erro ao desbloquear conta.'); } 
+  };
+  
   const handleResetPassword = async () => {
-    if (!newPassword || newPassword.length < 8) return alert('Mínimo 8 caracteres.');
+    if (!newPassword || newPassword.length < 8) return toast.error('A senha deve conter no mínimo 8 caracteres.');
     setResetLoading(true);
-    try { await api.post(`/users/${selectedUser.SamAccountName}/reset-password`, { new_password: newPassword, force_change: true, unlock_account: true }); alert('Senha aplicada.'); setNewPassword(''); } 
-    catch (err) { alert('Erro.'); } finally { setResetLoading(false); }
+    try { await api.post(`/users/${selectedUser.SamAccountName}/reset-password`, { new_password: newPassword, force_change: true, unlock_account: true }); toast.success('Credenciais redefinidas e conta desbloqueada.'); setNewPassword(''); } 
+    catch (err) { toast.error(err.response?.data?.detail || 'Erro ao resetar senha.'); } finally { setResetLoading(false); }
   };
-  const handleToggleStatus = async () => {
-    if (!window.confirm(`Deseja alterar status?`)) return;
-    try { await api.post(`/users/${selectedUser.SamAccountName}/toggle-status`); alert('Concluído.'); handleSearch(); } catch (err) { alert('Erro.'); }
+
+  const handleToggleStatus = () => {
+    const acaoText = selectedUser.Enabled ? 'desativar' : 'ativar';
+    showConfirm('Alteração de Status', `Deseja realmente ${acaoText} este objeto no Active Directory?`, async () => {
+      try { await api.post(`/users/${selectedUser.SamAccountName}/toggle-status`); toast.success('Status modificado com sucesso.'); handleSearch(); } 
+      catch (err) { toast.error(err.response?.data?.detail || 'Falha ao alterar status.'); }
+    });
   };
-  const handleSaveProfile = async () => { try { await api.post(`/users/${selectedUser.SamAccountName}/edit-profile`, editData); alert('Salvo.'); setModalEditOpen(false); handleSearch(); } catch (err) { alert('Erro.'); } };
+
+  const handleSaveProfile = async () => { 
+    try { await api.post(`/users/${selectedUser.SamAccountName}/edit-profile`, editData); toast.success('Perfil atualizado.'); setModalEditOpen(false); handleSearch(); } 
+    catch (err) { toast.error('Erro ao atualizar perfil.'); } 
+  };
+
   const openMoveModal = async () => {
     setModalMoveOpen(true); if (ouList.length > 0) return; setLoadingOus(true);
-    try { const response = await api.get('/ous'); setOuList(response.data.data); } catch (err) { alert('Erro.'); } finally { setLoadingOus(false); }
+    try { const response = await api.get('/ous'); setOuList(response.data.data); } 
+    catch (err) { toast.error('Falha ao obter árvore de diretórios.'); } finally { setLoadingOus(false); }
   };
-  const handleMoveOu = async () => { try { await api.post(`/users/${selectedUser.SamAccountName}/move`, { new_ou: selectedOu }); alert('Movido.'); setModalMoveOpen(false); handleSearch(); } catch (err) { alert('Erro.'); } };
-  const fetchLocalGroups = async () => { setLoadingGroups(true); try { const response = await api.get(`/computers/${selectedUser.SamAccountName}/local-groups`); setLocalGroups(response.data.data); } catch (err) { alert('Offline.'); } finally { setLoadingGroups(false); } };
+
+  const handleMoveOu = async () => { 
+    try { await api.post(`/users/${selectedUser.SamAccountName}/move`, { new_ou: selectedOu }); toast.success('Objeto movido organizacionalmente.'); setModalMoveOpen(false); handleSearch(); } 
+    catch (err) { toast.error('Erro ao movimentar OU.'); } 
+  };
+
+  const fetchLocalGroups = async () => { 
+    setLoadingGroups(true); 
+    try { const response = await api.get(`/computers/${selectedUser.SamAccountName}/local-groups`); setLocalGroups(response.data.data); toast.success('Grupos mapeados.'); } 
+    catch (err) { toast.error('Falha via WinRM. Computador inacessível.'); } finally { setLoadingGroups(false); } 
+  };
 
   const isUser = selectedUser?.Type === 'User';
   const isComputer = selectedUser?.Type === 'Computer';
@@ -209,6 +241,9 @@ export default function Dashboard() {
 
   return (
     <div style={styles.container}>
+      {/* COMPONENTE TOASTER (Substitui os alerts nativos) */}
+      <Toaster position="top-right" toastOptions={{ style: { background: COLORS.cell, color: COLORS.text, border: `1px solid ${COLORS.border}`, fontSize: '13px' }, success: { iconTheme: { primary: COLORS.success, secondary: COLORS.bg } }, error: { iconTheme: { primary: COLORS.danger, secondary: COLORS.bg } } }} />
+
       {/* HEADER */}
       <div style={styles.header}>
         <div style={styles.headerTitle}><div style={styles.logoBadge}>K</div><h2 style={{ margin: 0, fontSize: '18px', color: COLORS.gold, fontWeight: 600 }}>KAD Mobile</h2></div>
@@ -277,7 +312,7 @@ export default function Dashboard() {
                   <button style={innerTab === 'geral' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('geral')}>Geral</button>
                   <button style={innerTab === 'seguranca' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('seguranca')}>Segurança</button>
                   {(isUser || isComputer) && <button style={innerTab === 'grupos' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('grupos')}>Grupos ({selectedUser.MemberOf?.length || 0})</button>}
-                  {isUser && selectedUser.EmployeeID && <button style={innerTab === 'vetorh' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => { setInnerTab('vetorh'); }}>Vetorh DB</button>}
+                  {isUser && selectedUser.EmployeeID && <button style={innerTab === 'vetorh' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('vetorh')}>Vetorh DB</button>}
                 </div>
 
                 <div style={styles.innerContent}>
@@ -305,7 +340,7 @@ export default function Dashboard() {
                       <div style={styles.actionsGrid}>
                         {isComputer && <button onClick={() => runDiagnostic('ping')} style={styles.diagBtn}><Activity size={14}/> Ping ICMP</button>}
                         {isComputer && <button onClick={() => runDiagnostic('wmi')} style={styles.diagBtn}><BarChart size={14}/> WMI Hardware</button>}
-                        {isUser && <button onClick={() => runDiagnostic('splunk')} style={{...styles.diagBtn, borderColor: COLORS.warning, color: COLORS.warning}}><Search size={14}/> Rastrear Bloqueio (PDC)</button>}
+                        {isUser && <button onClick={() => runDiagnostic('splunk')} style={{...styles.diagBtn, borderColor: COLORS.warning, color: COLORS.warning}}><Search size={14}/> Rastrear Bloqueio</button>}
                       </div>
 
                       {isComputer && localGroups && (
@@ -464,6 +499,20 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* MODAL: CONFIRMAÇÃO GENÉRICA (Substitui window.confirm) */}
+      {confirmConfig.isOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalContent}>
+            <h3 style={{color: COLORS.gold, margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px'}}><AlertTriangle size={18}/> {confirmConfig.title}</h3>
+            <p style={{color: COLORS.text, fontSize: '13px', marginBottom: '20px', lineHeight: '1.5'}}>{confirmConfig.message}</p>
+            <div style={styles.modalActions}>
+              <button onClick={() => setConfirmConfig({...confirmConfig, isOpen: false})} style={styles.modalCancelBtn}>Cancelar</button>
+              <button onClick={handleConfirmAction} style={styles.modalSaveBtn}>Confirmar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL: TERMINAL */}
       {terminalOpen && (
         <div style={styles.modalOverlay}>
@@ -498,7 +547,7 @@ export default function Dashboard() {
         <div style={styles.modalOverlay}>
           <div style={styles.modalContent}>
             <h3 style={{color: COLORS.gold, margin: '0 0 15px 0'}}>Movimentação Estrutural</h3>
-            {loadingOus ? <p style={{color: COLORS.gold}}>Carregando estrutura...</p> : (
+            {loadingOus ? <p style={{color: COLORS.gold, fontSize: '13px'}}>Carregando estrutura...</p> : (
               <select value={selectedOu} onChange={(e) => setSelectedOu(e.target.value)} style={styles.modalSelect}>
                 <option value="">-- Destino Organizacional --</option>
                 {ouList.map((ou, idx) => <option key={idx} value={ou.dn}>{ou.ou}</option>)}
@@ -535,7 +584,6 @@ const styles = {
   listGrid: { display: 'flex', flexDirection: 'column', gap: '10px' }, miniCard: { backgroundColor: COLORS.frame, padding: '15px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '15px', border: `1px solid ${COLORS.border}`, cursor: 'pointer' },
   miniAvatar: { width: '36px', height: '36px', borderRadius: '18px', backgroundColor: COLORS.cell, color: COLORS.gold, display: 'flex', alignItems: 'center', justifyContent: 'center' },
   miniCardTitle: { margin: '0 0 2px 0', fontSize: '14px', color: COLORS.text, fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }, miniCardSubtitle: { margin: '0 0 2px 0', fontSize: '12px', color: COLORS.muted },
-  miniCardText: { margin: 0, fontSize: '11px', color: COLORS.muted },
   backBtn: { backgroundColor: 'transparent', color: COLORS.gold, border: 'none', cursor: 'pointer', marginBottom: '15px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', padding: 0 },
   
   card: { backgroundColor: COLORS.frame, borderRadius: '8px', padding: '20px', border: `1px solid ${COLORS.border}`, boxShadow: '0 4px 15px rgba(0,0,0,0.3)' },
@@ -547,8 +595,8 @@ const styles = {
   tagUnlocked: { backgroundColor: 'transparent', color: COLORS.success, padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', border: `1px solid ${COLORS.success}`, display: 'flex', alignItems: 'center', gap: '4px' }, tagLocked: { backgroundColor: 'transparent', color: COLORS.warning, padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', border: `1px solid ${COLORS.warning}`, display: 'flex', alignItems: 'center', gap: '4px' },
   tagType: { backgroundColor: COLORS.cell, color: COLORS.muted, padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', border: `1px solid ${COLORS.border}` },
   
-  innerTabActive: { backgroundColor: 'transparent', color: COLORS.gold, borderStyle: 'solid', borderWidth: '0 0 2px 0', borderColor: COLORS.gold, padding: '10px 15px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', whiteSpace: 'nowrap' }, 
-  innerTabInactive: { backgroundColor: 'transparent', color: COLORS.muted, borderStyle: 'solid', borderWidth: '0 0 2px 0', borderColor: 'transparent', padding: '10px 15px', fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap' },
+  innerTabs: { display: 'flex', borderBottom: `1px solid ${COLORS.border}`, marginBottom: '15px', overflowX: 'auto' },
+  innerTabActive: { backgroundColor: 'transparent', color: COLORS.gold, borderStyle: 'solid', borderWidth: '0 0 2px 0', borderColor: COLORS.gold, padding: '10px 15px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', whiteSpace: 'nowrap' }, innerTabInactive: { backgroundColor: 'transparent', color: COLORS.muted, borderStyle: 'solid', borderWidth: '0 0 2px 0', borderColor: 'transparent', padding: '10px 15px', fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap' },
   innerContent: { minHeight: '150px' }, detailGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' },
   detailItem: { backgroundColor: COLORS.cell, padding: '10px', borderRadius: '6px', border: `1px solid ${COLORS.border}` }, detailItemFull: { gridColumn: '1 / -1', backgroundColor: COLORS.cell, padding: '10px', borderRadius: '6px', border: `1px solid ${COLORS.border}` },
   detailLabel: { display: 'block', color: COLORS.muted, fontSize: '10px', textTransform: 'uppercase', marginBottom: '4px', fontWeight: 'bold', letterSpacing: '0.5px' }, detailValue: { color: COLORS.text, fontSize: '12px', fontWeight: '500' }, detailValueMicro: { color: COLORS.muted, fontSize: '11px', wordBreak: 'break-all' },
