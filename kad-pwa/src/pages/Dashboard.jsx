@@ -1,218 +1,578 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
+import { 
+  User, Monitor, Users, Search, Layers, Scale, Database, Printer, 
+  CheckCircle, Ban, Unlock, Activity, BarChart, ArrowRight, ArrowLeft, 
+  Tag, LogOut, Settings, Server, Trash2, RefreshCw, AlertTriangle 
+} from 'lucide-react';
 
 export default function Dashboard() {
+  const [activeTab, setActiveTab] = useState('single'); 
+  const [innerTab, setInnerTab] = useState('geral');
+
+  // Estados: Busca AD
   const [searchTerm, setSearchTerm] = useState('');
-  const [userResult, setUserResult] = useState(null);
+  const [searchResults, setSearchResults] = useState([]);
+  const [selectedUser, setSelectedUser] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   
   const [newPassword, setNewPassword] = useState('');
   const [resetLoading, setResetLoading] = useState(false);
+  const [localGroups, setLocalGroups] = useState(null);
+  const [loadingGroups, setLoadingGroups] = useState(false);
+
+  // Estados: Modais
+  const [modalEditOpen, setModalEditOpen] = useState(false);
+  const [editData, setEditData] = useState({ title: '', department: '', telephone: '' });
+  const [modalMoveOpen, setModalMoveOpen] = useState(false);
+  const [ouList, setOuList] = useState([]);
+  const [selectedOu, setSelectedOu] = useState('');
+  const [loadingOus, setLoadingOus] = useState(false);
+
+  // Estados: Terminal
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalTitle, setTerminalTitle] = useState('');
+  const [terminalContent, setTerminalContent] = useState('');
+  const [terminalLoading, setTerminalLoading] = useState(false);
+
+  // Estados: Lote & Comparador
+  const [bulkInput, setBulkInput] = useState('');
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
+  const [compareInput, setCompareInput] = useState('');
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareResult, setCompareResult] = useState(null);
+
+  // Estados: Vetorh
+  const [vetorhData, setVetorhData] = useState({ tipcol: 1, techacc: 'NTU' });
+  const [vetorhStatus, setVetorhStatus] = useState('Aguardando...');
+  const [vetorhLoading, setVetorhLoading] = useState(false);
+
+  // Estados: Impressoras
+  const [printServer, setPrintServer] = useState('');
+  const [printersList, setPrintersList] = useState([]);
+  const [printersLoading, setPrintersLoading] = useState(false);
 
   const navigate = useNavigate();
+  const handleLogout = () => { localStorage.removeItem('@kad_token'); navigate('/'); };
 
-  const handleLogout = () => {
-    localStorage.removeItem('@kad_token');
-    navigate('/');
-  };
-
+  // ==================== FUNÇÕES CORE AD ====================
   const handleSearch = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
     if (!searchTerm.trim()) return;
-
-    setLoading(true);
-    setError('');
-    setUserResult(null);
-    setNewPassword('');
-
+    setLoading(true); setError(''); setSearchResults([]); setSelectedUser(null); setNewPassword(''); setLocalGroups(null); setInnerTab('geral');
     try {
       const response = await api.get(`/users/${searchTerm}`);
-      setUserResult(response.data.data);
-    } catch (err) {
-      if (err.response && err.response.status === 404) {
-        setError('Nenhum resultado encontrado no AD.');
-      } else {
-        setError('Erro de conexão com o servidor.');
-      }
-    } finally {
-      setLoading(false);
+      setSearchResults(response.data.data);
+      if (response.data.data.length === 1) selectUserForDetail(response.data.data[0]);
+    } catch (err) { setError(err.response?.status === 404 ? 'Nenhum resultado localizado no diretório.' : 'Erro de conexão.'); } 
+    finally { setLoading(false); }
+  };
+
+  const selectUserForDetail = (user) => {
+    setSelectedUser(user);
+    setEditData({ title: user.Title || '', department: user.Department || '', telephone: user.TelephoneNumber || '' });
+    
+    // Reset preventivo para garantir que seletores não herdem cache de usuários anteriores
+    setVetorhData({ tipcol: 1, techacc: 'NTU' });
+
+    if (user.Type === 'User' && user.EmployeeID) {
+      setVetorhStatus('Consultando DB...');
+      setVetorhLoading(true);
+      api.get(`/vetorh/${user.EmployeeID}`)
+        .then(res => {
+          const fetchedTipcol = parseInt(res.data.tipcol) || 1;
+          const fetchedTechacc = res.data.techacc ? res.data.techacc.trim().toUpperCase() : 'NTU';
+          const tipoStr = fetchedTipcol === 1 ? 'Próprio' : 'Terceiro';
+          
+          // Correção Aplicada: Força a atualização do estado dos seletores visuais
+          setVetorhData({ tipcol: fetchedTipcol, techacc: fetchedTechacc });
+
+          if (res.data.error) {
+            setVetorhStatus(`Erro: ${res.data.error}`);
+          } else if (res.data.message) {
+            setVetorhStatus(res.data.message);
+          } else {
+            setVetorhStatus(`${fetchedTechacc} (${tipoStr})`);
+          }
+        })
+        .catch(() => setVetorhStatus('Falha de conexão com SQL'))
+        .finally(() => setVetorhLoading(false));
+    } else {
+      setVetorhStatus('Sem Matrícula');
     }
   };
 
-  const handleUnlock = async () => {
-    if (!userResult) return;
+  // ==================== VETORH (SQL) ====================
+  const saveVetorh = async () => {
+    setVetorhLoading(true);
     try {
-      await api.post(`/users/${userResult.SamAccountName}/unlock`);
-      alert(`Conta desbloqueada com sucesso!`);
-      handleSearch(new Event('submit'));
-    } catch (err) {
-      alert('Erro ao tentar desbloquear a conta.');
+      await api.post('/vetorh/update', { matriculas: [selectedUser.EmployeeID], tipcol: vetorhData.tipcol, techacc: vetorhData.techacc });
+      alert('Integração com Vetorh executada com sucesso.');
+      setVetorhStatus(`${vetorhData.techacc} (${vetorhData.tipcol === 1 ? 'Próprio' : 'Terceiro'})`);
+    } catch (err) { alert('Falha ao atualizar banco de dados.'); } finally { setVetorhLoading(false); }
+  };
+
+  // ==================== IMPRESSORAS ====================
+  const handleSearchPrinters = async (e) => {
+    if (e) e.preventDefault();
+    if (!printServer.trim()) return;
+    setPrintersLoading(true); setPrintersList([]);
+    try {
+      const response = await api.get(`/printers/${printServer}`);
+      const dadosRetorno = response.data.data;
+      
+      // Tratamento extra caso o array venha vazio ou com um só objeto
+      const dataArray = Array.isArray(dadosRetorno) ? dadosRetorno : (dadosRetorno ? [dadosRetorno] : []);
+      setPrintersList(dataArray);
+      
+    } catch (err) { 
+      // Agora o celular te mostra exatamente o porquê do erro WinRM
+      alert(err.response?.data?.detail || 'Falha ao comunicar com o servidor de impressão.'); 
+    } finally { 
+      setPrintersLoading(false); 
     }
   };
 
+  const clearQueue = async (queue) => {
+    if(!window.confirm(`Esvaziar a fila ${queue}?`)) return;
+    try { await api.post(`/printers/${printServer}/${queue}/clear`); alert('Fila limpa.'); } catch (err) { alert('Erro na operação.'); }
+  };
+
+  const restartSpooler = async () => {
+    if(!window.confirm(`Reiniciar o Spooler em ${printServer} derrubará conexões ativas. Confirmar?`)) return;
+    try { await api.post(`/printers/${printServer}/restart-spooler`); alert('Serviço reiniciado.'); } catch (err) { alert('Erro na operação.'); }
+  };
+
+  // ==================== DIAGNÓSTICOS ====================
+  const runDiagnostic = async (type) => {
+    const target = type === 'splunk' ? selectedUser.SamAccountName : (selectedUser.OS ? selectedUser.DisplayName : selectedUser.SamAccountName);
+    setTerminalTitle(`Terminal | ${type.toUpperCase()}`);
+    setTerminalContent(`[SYS] Iniciando varredura remota para ${target}...\n\n`);
+    setTerminalOpen(true); setTerminalLoading(true);
+    try {
+      const response = await api.get(`/diagnostics/${target}/${type}`);
+      setTerminalContent(prev => prev + response.data.output + '\n\n[SYS] Processo finalizado.');
+    } catch (err) { setTerminalContent(prev => prev + '\n[ERRO] Falha crítica de comunicação.'); } 
+    finally { setTerminalLoading(false); }
+  };
+
+  // ==================== COMPARADOR E LOTE ====================
+  const handleCompare = async () => {
+    const usersArray = compareInput.split(',').map(u => u.trim()).filter(u => u !== '');
+    if (usersArray.length < 2) return alert('Requer mínimo de 2 identidades.');
+    setCompareLoading(true); setCompareResult(null);
+    try { const response = await api.post('/compare', { usernames: usersArray }); setCompareResult(response.data); } 
+    catch (err) { alert('Erro na matriz de comparação.'); } finally { setCompareLoading(false); }
+  };
+
+  const handleBulkAction = async (actionType) => {
+    const usersArray = bulkInput.split(',').map(u => u.trim()).filter(u => u !== '');
+    if (usersArray.length === 0) return; if (!window.confirm(`Processar transação em lote?`)) return;
+    setBulkLoading(true); setBulkResult(null);
+    try { const response = await api.post(`/bulk/${actionType}`, { usernames: usersArray }); setBulkResult(response.data); } 
+    catch (err) { alert('Erro na transação.'); } finally { setBulkLoading(false); }
+  };
+
+  // ==================== AÇÕES BÁSICAS AD ====================
+  const handleUnlock = async () => { try { await api.post(`/users/${selectedUser.SamAccountName}/unlock`); alert('Desbloqueado.'); handleSearch(); } catch (err) { alert('Erro.'); } };
   const handleResetPassword = async () => {
-    if (!newPassword || newPassword.length < 8) {
-      alert('A senha temporária deve ter pelo menos 8 caracteres.');
-      return;
-    }
+    if (!newPassword || newPassword.length < 8) return alert('Mínimo 8 caracteres.');
     setResetLoading(true);
-    try {
-      await api.post(`/users/${userResult.SamAccountName}/reset-password`, {
-        new_password: newPassword
-      });
-      alert(`Senha redefinida com sucesso!\nO usuário deverá alterar a senha no próximo logon.`);
-      setNewPassword('');
-    } catch (err) {
-      alert('Erro ao redefinir a senha.');
-    } finally {
-      setResetLoading(false);
-    }
+    try { await api.post(`/users/${selectedUser.SamAccountName}/reset-password`, { new_password: newPassword, force_change: true, unlock_account: true }); alert('Senha aplicada.'); setNewPassword(''); } 
+    catch (err) { alert('Erro.'); } finally { setResetLoading(false); }
   };
+  const handleToggleStatus = async () => {
+    if (!window.confirm(`Deseja alterar status?`)) return;
+    try { await api.post(`/users/${selectedUser.SamAccountName}/toggle-status`); alert('Concluído.'); handleSearch(); } catch (err) { alert('Erro.'); }
+  };
+  const handleSaveProfile = async () => { try { await api.post(`/users/${selectedUser.SamAccountName}/edit-profile`, editData); alert('Salvo.'); setModalEditOpen(false); handleSearch(); } catch (err) { alert('Erro.'); } };
+  const openMoveModal = async () => {
+    setModalMoveOpen(true); if (ouList.length > 0) return; setLoadingOus(true);
+    try { const response = await api.get('/ous'); setOuList(response.data.data); } catch (err) { alert('Erro.'); } finally { setLoadingOus(false); }
+  };
+  const handleMoveOu = async () => { try { await api.post(`/users/${selectedUser.SamAccountName}/move`, { new_ou: selectedOu }); alert('Movido.'); setModalMoveOpen(false); handleSearch(); } catch (err) { alert('Erro.'); } };
+  const fetchLocalGroups = async () => { setLoadingGroups(true); try { const response = await api.get(`/computers/${selectedUser.SamAccountName}/local-groups`); setLocalGroups(response.data.data); } catch (err) { alert('Offline.'); } finally { setLoadingGroups(false); } };
 
-  // Variáveis para facilitar a renderização
-  const isUser = userResult?.Type === 'User';
-  const isComputer = userResult?.Type === 'Computer';
-  const isGroup = userResult?.Type === 'Group';
+  const isUser = selectedUser?.Type === 'User';
+  const isComputer = selectedUser?.Type === 'Computer';
+  const isGroup = selectedUser?.Type === 'Group';
+
+  const renderIcon = (type, size = 20) => {
+    if (type === 'User') return <User size={size} />;
+    if (type === 'Computer') return <Monitor size={size} />;
+    if (type === 'Group') return <Users size={size} />;
+    return <Tag size={size} />;
+  };
 
   return (
     <div style={styles.container}>
+      {/* HEADER */}
       <div style={styles.header}>
-        <div style={styles.headerTitle}>
-          <span style={styles.logoBadge}>K</span>
-          <h2 style={{ margin: 0, fontSize: '18px' }}>KAD Mobile</h2>
-        </div>
-        <button onClick={handleLogout} style={styles.logoutBtn}>Sair</button>
+        <div style={styles.headerTitle}><div style={styles.logoBadge}>K</div><h2 style={{ margin: 0, fontSize: '18px', color: COLORS.gold, fontWeight: 600 }}>KAD Mobile</h2></div>
+        <button onClick={handleLogout} style={styles.logoutBtn}><LogOut size={18} /></button>
+      </div>
+
+      {/* NAVEGAÇÃO PRINCIPAL */}
+      <div style={styles.tabContainer}>
+        <button style={activeTab === 'single' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('single')}><Search size={16} /> Identidade</button>
+        <button style={activeTab === 'bulk' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('bulk')}><Layers size={16} /> Lote</button>
+        <button style={activeTab === 'compare' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('compare')}><Scale size={16} /> Comparador</button>
+        <button style={activeTab === 'printers' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('printers')}><Printer size={16} /> Print</button>
       </div>
 
       <div style={styles.content}>
-        <form onSubmit={handleSearch} style={styles.searchForm}>
-          <div style={styles.searchWrapper}>
-            <input 
-              type="text" 
-              placeholder="Matrícula, Login, Máquina ou Grupo..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              style={styles.input}
-            />
-            <button type="submit" disabled={loading} style={styles.searchBtn}>
-              {loading ? <div style={styles.spinner}></div> : '🔍'}
-            </button>
-          </div>
-        </form>
-
-        {error && <div style={styles.errorBox}>⚠️ {error}</div>}
-
-        {userResult && (
-          <div style={styles.card}>
-            {/* Cabeçalho do Card com Ícone Dinâmico */}
-            <div style={styles.cardHeader}>
-              <div style={styles.avatar}>
-                {isUser ? '👤' : isComputer ? '💻' : isGroup ? '👥' : '🏷️'}
+        
+        {/* ================= ABA 1: IDENTIDADE ================= */}
+        {activeTab === 'single' && (
+          <>
+            <form onSubmit={handleSearch} style={styles.searchForm}>
+              <div style={styles.searchWrapper}>
+                <input type="text" placeholder="Nome, Matrícula, Hostname..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={styles.input} />
+                <button type="submit" disabled={loading} style={styles.searchBtn}>{loading ? <div style={styles.spinner}></div> : <Search size={20} />}</button>
               </div>
+            </form>
+            {error && <div style={styles.errorBox}><Ban size={16} /> {error}</div>}
+
+            {searchResults.length > 1 && !selectedUser && (
               <div>
-                <h3 style={styles.cardTitle}>{userResult.DisplayName}</h3>
-                <p style={styles.cardSubtitle}>
-                  {userResult.SamAccountName} 
-                  {userResult.EmployeeID ? ` • Matrícula: ${userResult.EmployeeID}` : ''}
-                </p>
-              </div>
-            </div>
-
-            {/* Status (Para Computadores e Usuários) */}
-            {(isUser || isComputer) && (
-              <div style={styles.statusRow}>
-                <span style={userResult.Enabled ? styles.tagActive : styles.tagInactive}>
-                  {userResult.Enabled ? 'Ativo no AD' : 'Desativado'}
-                </span>
-                {isUser && (
-                  <span style={userResult.LockedOut ? styles.tagLocked : styles.tagUnlocked}>
-                    {userResult.LockedOut ? 'Conta Bloqueada' : 'Sem Bloqueio'}
-                  </span>
-                )}
+                <p style={{ color: COLORS.gold, marginBottom: '15px', fontWeight: 'bold' }}>Resultados da pesquisa ({searchResults.length}):</p>
+                <div style={styles.listGrid}>
+                  {searchResults.map((item, idx) => (
+                    <div key={idx} onClick={() => selectUserForDetail(item)} style={styles.miniCard}>
+                      <div style={styles.miniAvatar}>{renderIcon(item.Type)}</div>
+                      <div style={{ flex: 1 }}>
+                        <h4 style={styles.miniCardTitle}>{item.DisplayName}</h4>
+                        <p style={styles.miniCardSubtitle}>{item.SamAccountName} {item.EmployeeID ? `• Mat: ${item.EmployeeID}` : ''}</p>
+                      </div>
+                      <div style={{ color: COLORS.gold }}><ArrowRight size={18} /></div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
-            {/* Informações Extras */}
-            {userResult.EmailAddress && <p style={styles.infoText}>✉️ <strong>Email:</strong> {userResult.EmailAddress}</p>}
-            {userResult.OS && <p style={styles.infoText}>🖥️ <strong>Sistema:</strong> {userResult.OS}</p>}
-            {userResult.Description && <p style={styles.infoText}>📝 <strong>Detalhe:</strong> {userResult.Description}</p>}
+            {selectedUser && (
+              <div style={styles.card}>
+                {searchResults.length > 1 && <button onClick={() => setSelectedUser(null)} style={styles.backBtn}><ArrowLeft size={16} /> Voltar à lista</button>}
+                <div style={styles.cardHeader}>
+                  <div style={styles.avatar}>{renderIcon(selectedUser.Type, 24)}</div>
+                  <div style={{flex: 1}}>
+                    <h3 style={styles.cardTitle}>{selectedUser.DisplayName}</h3>
+                    <p style={styles.cardSubtitle}>{selectedUser.SamAccountName} {selectedUser.EmployeeID ? `• Matrícula: ${selectedUser.EmployeeID}` : ''}</p>
+                  </div>
+                </div>
 
-            {/* Ações (APENAS PARA USUÁRIOS) */}
-            {isUser && (
-              <div style={styles.actionsContainer}>
-                {userResult.LockedOut && (
-                  <button onClick={handleUnlock} style={styles.actionBtnWarning}>
-                    🔓 Desbloquear Conta
+                <div style={styles.statusRow}>
+                  <button onClick={handleToggleStatus} style={selectedUser.Enabled ? styles.tagActive : styles.tagInactive}>
+                    {selectedUser.Enabled ? <><CheckCircle size={14}/> Ativo (Desativar)</> : <><Ban size={14}/> Desativado (Ativar)</>}
                   </button>
-                )}
+                  {isUser && <span style={selectedUser.LockedOut ? styles.tagLocked : styles.tagUnlocked}>{selectedUser.LockedOut ? <><AlertTriangle size={14}/> Bloqueada</> : <><CheckCircle size={14}/> Sem Bloqueio</>}</span>}
+                  <span style={styles.tagType}>{selectedUser.Type}</span>
+                </div>
 
-                {userResult.Enabled && (
-                  <div style={styles.resetContainer}>
-                    <p style={styles.sectionLabel}>Redefinir Senha</p>
-                    <div style={styles.resetRow}>
-                      <input 
-                        type="text" 
-                        placeholder="Senha temporária" 
-                        value={newPassword}
-                        onChange={(e) => setNewPassword(e.target.value)}
-                        style={styles.inputReset}
-                      />
-                      <button onClick={handleResetPassword} disabled={resetLoading} style={styles.actionBtnSuccess}>
-                        {resetLoading ? '...' : 'Resetar'}
-                      </button>
+                <div style={styles.innerTabs}>
+                  <button style={innerTab === 'geral' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('geral')}>Geral</button>
+                  <button style={innerTab === 'seguranca' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('seguranca')}>Segurança</button>
+                  {(isUser || isComputer) && <button style={innerTab === 'grupos' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('grupos')}>Grupos ({selectedUser.MemberOf?.length || 0})</button>}
+                  {isUser && selectedUser.EmployeeID && <button style={innerTab === 'vetorh' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => { setInnerTab('vetorh'); }}>Vetorh DB</button>}
+                </div>
+
+                <div style={styles.innerContent}>
+                  {innerTab === 'geral' && (
+                    <div style={styles.detailGrid}>
+                      <div style={styles.detailItemFull}><span style={styles.detailLabel}>E-mail</span><span style={styles.detailValue}>{selectedUser.EmailAddress || 'N/A'}</span></div>
+                      {isUser && <div style={styles.detailItem}><span style={styles.detailLabel}>Telefone</span><span style={styles.detailValue}>{selectedUser.TelephoneNumber || 'N/A'}</span></div>}
+                      {isUser && <div style={styles.detailItem}><span style={styles.detailLabel}>Cargo</span><span style={styles.detailValue}>{selectedUser.Title || 'N/A'}</span></div>}
+                      {isUser && <div style={styles.detailItemFull}><span style={styles.detailLabel}>Acesso Vetorh (TechAcc)</span><span style={{...styles.detailValue, color: COLORS.gold}}>{vetorhStatus}</span></div>}
+                      {(isComputer || isGroup) && <div style={styles.detailItem}><span style={styles.detailLabel}>Descrição</span><span style={styles.detailValue}>{selectedUser.Description || 'N/A'}</span></div>}
+                      {isComputer && <div style={styles.detailItem}><span style={styles.detailLabel}>S. Operacional</span><span style={styles.detailValue}>{selectedUser.OS || 'N/A'}</span></div>}
+                      <div style={styles.detailItemFull}><span style={styles.detailLabel}>Caminho de Diretório (DN)</span><span style={styles.detailValueMicro}>{selectedUser.DN}</span></div>
                     </div>
+                  )}
+
+                  {innerTab === 'seguranca' && (
+                    <div style={styles.actionSection}>
+                      <div style={styles.actionsGrid}>
+                        {isUser && <button onClick={() => setModalEditOpen(true)} style={styles.gridBtn}><Settings size={14} /> Editar Perfil</button>}
+                        {(isUser || isComputer) && <button onClick={openMoveModal} style={styles.gridBtn}><Server size={14} /> Mover OU</button>}
+                        {isComputer && <button onClick={fetchLocalGroups} disabled={loadingGroups} style={styles.gridBtn}>{loadingGroups ? 'Processando...' : <><Users size={14}/> Grupos Locais</>}</button>}
+                      </div>
+
+                      <p style={styles.sectionLabel}>Telemetria e Diagnósticos</p>
+                      <div style={styles.actionsGrid}>
+                        {isComputer && <button onClick={() => runDiagnostic('ping')} style={styles.diagBtn}><Activity size={14}/> Ping ICMP</button>}
+                        {isComputer && <button onClick={() => runDiagnostic('wmi')} style={styles.diagBtn}><BarChart size={14}/> WMI Hardware</button>}
+                        {isUser && <button onClick={() => runDiagnostic('splunk')} style={{...styles.diagBtn, borderColor: COLORS.warning, color: COLORS.warning}}><Search size={14}/> Rastrear Bloqueio (PDC)</button>}
+                      </div>
+
+                      {isComputer && localGroups && (
+                         <div style={styles.groupsBox}>
+                           <p style={styles.sectionLabel}>Mapeamento de Administradores Locais</p>
+                           {localGroups.length === 0 ? <p style={styles.hintText}>Lista vazia.</p> : localGroups.map((g, i) => <div key={i} style={styles.groupItem}><strong>{g.Grupo}:</strong> {g.Membro}</div>)}
+                         </div>
+                      )}
+
+                      {isUser && (
+                        <div style={styles.dangerZone}>
+                          {selectedUser.LockedOut && <button onClick={handleUnlock} style={styles.actionBtnWarning}><Unlock size={14}/> Desbloquear Conta</button>}
+                          {selectedUser.Enabled && (
+                            <div style={styles.resetContainer}>
+                              <p style={styles.sectionLabel}>Redefinir Credenciais</p>
+                              <div style={styles.resetRow}>
+                                <input type="text" placeholder="Senha provisória" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={styles.inputReset} />
+                                <button onClick={handleResetPassword} disabled={resetLoading} style={styles.actionBtnSuccess}>{resetLoading ? 'Aguarde' : 'Confirmar'}</button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {innerTab === 'grupos' && (
+                     <div style={styles.listContainer}>
+                       {selectedUser.MemberOf?.length === 0 ? <p style={styles.hintText}>Nenhum relacionamento encontrado.</p> : selectedUser.MemberOf.map((g, i) => <div key={i} style={styles.listItem}><Users size={14} style={{marginRight: '8px', color: COLORS.muted}}/> {g}</div>)}
+                     </div>
+                  )}
+
+                  {innerTab === 'vetorh' && (
+                     <div style={styles.actionSection}>
+                       {vetorhLoading ? <p style={styles.hintText}>Sincronizando com SQL Server...</p> : (
+                         <>
+                           <div style={styles.resetContainer}>
+                             <p style={styles.sectionLabel}>Tipo de Colaborador</p>
+                             <select value={vetorhData.tipcol} onChange={(e) => setVetorhData({...vetorhData, tipcol: parseInt(e.target.value)})} style={styles.modalSelect}>
+                               <option value={1}>1 - Próprio</option>
+                               <option value={2}>2 - Terceiro</option>
+                             </select>
+                           </div>
+                           <div style={styles.resetContainer}>
+                             <p style={styles.sectionLabel}>Nível de Acesso Técnico</p>
+                             <select value={vetorhData.techacc} onChange={(e) => setVetorhData({...vetorhData, techacc: e.target.value})} style={styles.modalSelect}>
+                               <option value="NTU">NTU (Básico)</option>
+                               <option value="LTU">LTU (Leitura)</option>
+                               <option value="ETU">ETU (Edição)</option>
+                             </select>
+                           </div>
+                           <button onClick={saveVetorh} style={{...styles.gridBtn, backgroundColor: COLORS.success, color: COLORS.bg, fontWeight: 'bold'}}><Database size={14}/> Aplicar Procedure</button>
+                         </>
+                       )}
+                     </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ================= ABA 2: LOTE ================= */}
+        {activeTab === 'bulk' && (
+          <div style={styles.card}>
+            <h3 style={styles.cardTitle}>Transação em Lote</h3>
+            <p style={styles.hintText}>Insira os identificadores divididos por vírgula.</p>
+            <textarea value={bulkInput} onChange={(e) => setBulkInput(e.target.value)} placeholder="Identificadores..." style={styles.textArea} />
+            <div style={styles.bulkActionsGrid}>
+              <button disabled={bulkLoading} onClick={() => handleBulkAction('unlock')} style={styles.bulkBtnUnlock}><Unlock size={14}/> Desbloquear</button>
+              <button disabled={bulkLoading} onClick={() => handleBulkAction('enable')} style={styles.bulkBtnEnable}><CheckCircle size={14}/> Ativar</button>
+              <button disabled={bulkLoading} onClick={() => handleBulkAction('disable')} style={styles.bulkBtnDisable}><Ban size={14}/> Desativar</button>
+            </div>
+            {bulkResult && (
+              <div style={styles.bulkResultBox}>
+                <p style={{ color: COLORS.success, fontWeight: 'bold', margin: '0 0 10px 0' }}>Concluídos: {bulkResult.success_count} de {bulkResult.total}</p>
+                {bulkResult.errors.length > 0 && (
+                  <div>
+                    <p style={{ color: COLORS.danger, fontSize: '13px', margin: '0 0 5px 0' }}>Exceções:</p>
+                    <ul style={{ color: COLORS.danger, fontSize: '12px', paddingLeft: '20px', margin: 0 }}>
+                      {bulkResult.errors.map((err, idx) => <li key={idx}><strong>{err.user}:</strong> {err.error}</li>)}
+                    </ul>
                   </div>
                 )}
               </div>
             )}
-            
+          </div>
+        )}
+
+        {/* ================= ABA 3: COMPARADOR ================= */}
+        {activeTab === 'compare' && (
+          <div style={styles.card}>
+            <h3 style={styles.cardTitle}>Matriz de Permissões</h3>
+            <p style={styles.hintText}>Avalie divergências em políticas de segurança.</p>
+            <div style={styles.searchWrapper}>
+              <input type="text" placeholder="Logins..." value={compareInput} onChange={(e) => setCompareInput(e.target.value)} style={styles.input} />
+              <button onClick={handleCompare} disabled={compareLoading} style={styles.searchBtn}>{compareLoading ? <div style={styles.spinner}></div> : <Scale size={18} />}</button>
+            </div>
+
+            {compareResult && (
+              <div style={{ marginTop: '20px' }}>
+                <div style={styles.commonBox}>
+                  <p style={{ color: COLORS.success, fontWeight: 'bold', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: '5px' }}><CheckCircle size={16}/> Conformidade (Em Comum)</p>
+                  <div style={styles.listContainer}>
+                    {compareResult.common_groups.map((g, idx) => <div key={idx} style={{...styles.listItem, color: COLORS.success, borderColor: COLORS.success}}>{g}</div>)}
+                  </div>
+                </div>
+
+                <p style={{ color: COLORS.warning, fontWeight: 'bold', margin: '20px 0 10px 0' }}>Divergências (Exclusivos)</p>
+                <div style={styles.diffGrid}>
+                  {Object.keys(compareResult.users).map((username, idx) => (
+                    <div key={idx} style={styles.diffCard}>
+                      <p style={{ margin: '0 0 5px 0', color: COLORS.gold, fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '5px' }}><User size={14}/> {username.toUpperCase()}</p>
+                      <div style={styles.listContainer}>
+                        {compareResult.users[username].ExclusiveGroups.map((g, i) => <div key={i} style={{...styles.listItem, padding: '6px', fontSize: '11px'}}>{g}</div>)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ================= ABA 4: IMPRESSORAS ================= */}
+        {activeTab === 'printers' && (
+          <div style={styles.card}>
+            <h3 style={styles.cardTitle}>Gestor de Spool</h3>
+            <p style={styles.hintText}>Mapeamento de recursos em servidores físicos.</p>
+            <form onSubmit={handleSearchPrinters} style={styles.searchForm}>
+              <div style={styles.searchWrapper}>
+                <input type="text" placeholder="Servidor (Ex: PTU-PRN-01)" value={printServer} onChange={(e) => setPrintServer(e.target.value)} style={styles.input} />
+                <button type="submit" disabled={printersLoading} style={styles.searchBtn}>{printersLoading ? <div style={styles.spinner}></div> : <Search size={20} />}</button>
+              </div>
+            </form>
+
+            {printersList.length > 0 && (
+              <>
+                <button onClick={restartSpooler} style={{...styles.actionBtnWarning, width: '100%', marginBottom: '15px', display: 'flex', justifyContent: 'center', gap: '8px'}}><RefreshCw size={16}/> Reiniciar Spooler do Servidor</button>
+                <div style={styles.listGrid}>
+                  {printersList.map((prn, idx) => (
+                    <div key={idx} style={{...styles.miniCard, flexDirection: 'column', alignItems: 'flex-start', cursor: 'default'}}>
+                      <div style={{display: 'flex', justifyContent: 'space-between', width: '100%'}}>
+                        <h4 style={styles.miniCardTitle}><Printer size={14}/> {prn.Name}</h4>
+                        <span style={{color: COLORS.muted, fontSize: '12px'}}>{prn.JobCount} jobs</span>
+                      </div>
+                      <p style={styles.miniCardSubtitle}>{prn.DriverName}</p>
+                      <p style={styles.miniCardText}>{prn.PortName} | Status: {prn.PrinterStatus?.Value || prn.PrinterStatus}</p>
+                      <button onClick={() => clearQueue(prn.Name)} style={{...styles.gridBtn, marginTop: '10px', width: '100%', borderColor: COLORS.warning, color: COLORS.warning, display: 'flex', justifyContent: 'center', gap: '8px'}}><Trash2 size={14}/> Limpar Fila</button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
+
+      {/* MODAL: TERMINAL */}
+      {terminalOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={{...styles.modalContent, maxWidth: '600px', backgroundColor: '#000', border: `1px solid ${COLORS.border}`}}>
+            <h3 style={{color: COLORS.gold, margin: '0 0 10px 0', fontFamily: 'monospace', fontSize: '14px'}}>{terminalTitle}</h3>
+            <textarea readOnly value={terminalContent} style={{ width: '100%', height: '300px', backgroundColor: '#000', color: '#00FF00', fontFamily: 'monospace', fontSize: '12px', border: 'none', outline: 'none', resize: 'none' }} />
+            <div style={styles.modalActions}>
+              <button disabled={terminalLoading} onClick={() => setTerminalOpen(false)} style={{...styles.modalSaveBtn, display: 'flex', justifyContent: 'center', alignItems: 'center'}}>{terminalLoading ? 'Aguarde' : 'Encerrar Sessão'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EDITAR PERFIL */}
+      {modalEditOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalContent}>
+            <h3 style={{color: COLORS.gold, margin: '0 0 15px 0'}}>Atualização de Registro</h3>
+            <input type="text" value={editData.title} onChange={e => setEditData({...editData, title: e.target.value})} style={styles.modalInput} placeholder="Cargo" />
+            <input type="text" value={editData.department} onChange={e => setEditData({...editData, department: e.target.value})} style={{...styles.modalInput, marginTop: '10px'}} placeholder="Departamento" />
+            <input type="text" value={editData.telephone} onChange={e => setEditData({...editData, telephone: e.target.value})} style={{...styles.modalInput, marginTop: '10px'}} placeholder="Telefone" />
+            <div style={styles.modalActions}>
+              <button onClick={() => setModalEditOpen(false)} style={styles.modalCancelBtn}>Cancelar</button>
+              <button onClick={handleSaveProfile} style={styles.modalSaveBtn}>Aplicar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: MOVER OU */}
+      {modalMoveOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalContent}>
+            <h3 style={{color: COLORS.gold, margin: '0 0 15px 0'}}>Movimentação Estrutural</h3>
+            {loadingOus ? <p style={{color: COLORS.gold}}>Carregando estrutura...</p> : (
+              <select value={selectedOu} onChange={(e) => setSelectedOu(e.target.value)} style={styles.modalSelect}>
+                <option value="">-- Destino Organizacional --</option>
+                {ouList.map((ou, idx) => <option key={idx} value={ou.dn}>{ou.ou}</option>)}
+              </select>
+            )}
+            <div style={styles.modalActions}>
+              <button onClick={() => setModalMoveOpen(false)} style={styles.modalCancelBtn}>Cancelar</button>
+              <button onClick={handleMoveOu} style={styles.modalSaveBtn}>Movimentar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// Estilos
-const styles = {
-  container: { backgroundColor: '#121212', minHeight: '100vh', fontFamily: '-apple-system, sans-serif' },
-  header: { backgroundColor: '#1e1e1e', padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #333' },
-  headerTitle: { display: 'flex', alignItems: 'center', gap: '10px', color: '#fff' },
-  logoBadge: { backgroundColor: '#e2a829', color: '#000', width: '32px', height: '32px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '18px' },
-  logoutBtn: { background: 'none', border: 'none', color: '#999', cursor: 'pointer', padding: '5px' },
-  content: { padding: '20px', maxWidth: '600px', margin: '0 auto' },
-  searchForm: { marginBottom: '25px' },
-  searchWrapper: { display: 'flex', gap: '8px', backgroundColor: '#2d2d2d', borderRadius: '12px', padding: '6px', border: '1px solid #444' },
-  input: { flex: 1, backgroundColor: 'transparent', border: 'none', color: '#fff', fontSize: '16px', padding: '10px', outline: 'none' },
-  searchBtn: { backgroundColor: '#e2a829', color: '#000', border: 'none', borderRadius: '8px', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '20px' },
-  spinner: { width: '20px', height: '20px', border: '3px solid rgba(0,0,0,0.3)', borderTop: '3px solid #000', borderRadius: '50%', animation: 'spin 1s linear infinite' },
-  errorBox: { backgroundColor: 'rgba(255, 77, 77, 0.1)', color: '#ff4d4d', padding: '12px', borderRadius: '8px', textAlign: 'center', marginBottom: '20px', border: '1px solid rgba(255, 77, 77, 0.3)' },
-  
-  card: { backgroundColor: '#1e1e1e', borderRadius: '16px', padding: '20px', border: '1px solid #333', boxShadow: '0 4px 20px rgba(0,0,0,0.5)' },
-  cardHeader: { display: 'flex', alignItems: 'center', gap: '15px', marginBottom: '16px' },
-  avatar: { width: '50px', height: '50px', borderRadius: '25px', backgroundColor: '#333', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' },
-  cardTitle: { color: '#fff', margin: '0 0 4px 0', fontSize: '18px' },
-  cardSubtitle: { color: '#aaa', margin: 0, fontSize: '14px' },
-  
-  statusRow: { display: 'flex', gap: '10px', marginBottom: '16px' },
-  tagActive: { backgroundColor: 'rgba(76, 175, 80, 0.2)', color: '#4CAF50', padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' },
-  tagInactive: { backgroundColor: 'rgba(153, 153, 153, 0.2)', color: '#999', padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' },
-  tagUnlocked: { backgroundColor: 'rgba(76, 175, 80, 0.2)', color: '#4CAF50', padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' },
-  tagLocked: { backgroundColor: 'rgba(255, 77, 77, 0.2)', color: '#ff4d4d', padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' },
-  
-  infoText: { color: '#ddd', fontSize: '14px', margin: '0 0 10px 0' },
-  actionsContainer: { display: 'flex', flexDirection: 'column', gap: '15px', borderTop: '1px solid #333', paddingTop: '20px', marginTop: '10px' },
-  actionBtnWarning: { backgroundColor: '#ff4d4d', color: '#fff', border: 'none', padding: '14px', borderRadius: '10px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer', textAlign: 'center' },
-  
-  resetContainer: { backgroundColor: '#252525', padding: '15px', borderRadius: '12px' },
-  sectionLabel: { color: '#aaa', fontSize: '13px', margin: '0 0 10px 0', textTransform: 'uppercase', letterSpacing: '0.5px' },
-  resetRow: { display: 'flex', gap: '10px' },
-  inputReset: { flex: 1, backgroundColor: '#1a1a1a', border: '1px solid #444', color: '#fff', padding: '12px', borderRadius: '8px', fontSize: '14px', outline: 'none' },
-  actionBtnSuccess: { backgroundColor: '#4CAF50', color: '#fff', border: 'none', padding: '0 20px', borderRadius: '8px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer' }
-};
+// ESTILOS CORPORATIVOS
+const COLORS = { bg: '#0B111E', frame: '#161F32', cell: '#121824', border: '#24324D', gold: '#C5A059', text: '#F8FAFC', muted: '#94A3B8', success: '#10B981', warning: '#F59E0B', danger: '#EF4444' };
 
-const styleSheet = document.createElement("style");
-styleSheet.innerText = `@keyframes spin { 100% { transform: rotate(360deg); } }`;
-document.head.appendChild(styleSheet);
+const styles = {
+  container: { backgroundColor: COLORS.bg, minHeight: '100vh', fontFamily: '-apple-system, sans-serif', paddingBottom: '30px', color: COLORS.text },
+  header: { backgroundColor: COLORS.frame, padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${COLORS.border}` },
+  headerTitle: { display: 'flex', alignItems: 'center', gap: '10px' }, logoBadge: { backgroundColor: COLORS.gold, color: COLORS.bg, width: '28px', height: '28px', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' },
+  logoutBtn: { background: 'none', border: 'none', color: COLORS.muted, cursor: 'pointer', display: 'flex', alignItems: 'center' },
+  tabContainer: { display: 'flex', backgroundColor: COLORS.frame, borderBottom: `1px solid ${COLORS.border}`, overflowX: 'auto' },
+  tabActive: { flex: 1, padding: '15px', backgroundColor: COLORS.bg, color: COLORS.gold, borderStyle: 'solid', borderWidth: '0 0 2px 0', borderColor: COLORS.gold, fontWeight: '600', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', whiteSpace: 'nowrap' },
+  tabInactive: { flex: 1, padding: '15px', backgroundColor: 'transparent', color: COLORS.muted, borderStyle: 'solid', borderWidth: '0 0 2px 0', borderColor: 'transparent', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', whiteSpace: 'nowrap', cursor: 'pointer' },
+  content: { padding: '20px', maxWidth: '600px', margin: '0 auto' },
+  searchForm: { marginBottom: '20px' }, searchWrapper: { display: 'flex', gap: '8px', backgroundColor: COLORS.cell, borderRadius: '6px', padding: '6px', border: `1px solid ${COLORS.border}` },
+  input: { flex: 1, backgroundColor: 'transparent', border: 'none', color: COLORS.text, fontSize: '14px', padding: '10px', outline: 'none' }, searchBtn: { backgroundColor: COLORS.gold, color: COLORS.bg, border: 'none', borderRadius: '4px', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' },
+  spinner: { width: '18px', height: '18px', border: `2px solid rgba(0,0,0,0.2)`, borderTop: `2px solid ${COLORS.bg}`, borderRadius: '50%', animation: 'spin 1s linear infinite' },
+  errorBox: { backgroundColor: 'rgba(239, 68, 68, 0.1)', color: COLORS.danger, padding: '12px', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px', border: `1px solid ${COLORS.danger}` },
+  
+  listGrid: { display: 'flex', flexDirection: 'column', gap: '10px' }, miniCard: { backgroundColor: COLORS.frame, padding: '15px', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '15px', border: `1px solid ${COLORS.border}`, cursor: 'pointer' },
+  miniAvatar: { width: '36px', height: '36px', borderRadius: '18px', backgroundColor: COLORS.cell, color: COLORS.gold, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  miniCardTitle: { margin: '0 0 2px 0', fontSize: '14px', color: COLORS.text, fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }, miniCardSubtitle: { margin: '0 0 2px 0', fontSize: '12px', color: COLORS.muted },
+  miniCardText: { margin: 0, fontSize: '11px', color: COLORS.muted },
+  backBtn: { backgroundColor: 'transparent', color: COLORS.gold, border: 'none', cursor: 'pointer', marginBottom: '15px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', padding: 0 },
+  
+  card: { backgroundColor: COLORS.frame, borderRadius: '8px', padding: '20px', border: `1px solid ${COLORS.border}`, boxShadow: '0 4px 15px rgba(0,0,0,0.3)' },
+  cardHeader: { display: 'flex', alignItems: 'center', gap: '15px', marginBottom: '15px' }, avatar: { width: '44px', height: '44px', borderRadius: '6px', backgroundColor: COLORS.cell, color: COLORS.gold, border: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  cardTitle: { color: COLORS.gold, margin: '0 0 4px 0', fontSize: '16px', fontWeight: 'bold' }, cardSubtitle: { color: COLORS.muted, margin: 0, fontSize: '12px' },
+  statusRow: { display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' },
+  tagActive: { backgroundColor: 'transparent', color: COLORS.success, padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', border: `1px solid ${COLORS.success}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' },
+  tagInactive: { backgroundColor: 'transparent', color: COLORS.danger, padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', border: `1px solid ${COLORS.danger}`, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' },
+  tagUnlocked: { backgroundColor: 'transparent', color: COLORS.success, padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', border: `1px solid ${COLORS.success}`, display: 'flex', alignItems: 'center', gap: '4px' }, tagLocked: { backgroundColor: 'transparent', color: COLORS.warning, padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', border: `1px solid ${COLORS.warning}`, display: 'flex', alignItems: 'center', gap: '4px' },
+  tagType: { backgroundColor: COLORS.cell, color: COLORS.muted, padding: '6px 12px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', border: `1px solid ${COLORS.border}` },
+  
+  innerTabActive: { backgroundColor: 'transparent', color: COLORS.gold, borderStyle: 'solid', borderWidth: '0 0 2px 0', borderColor: COLORS.gold, padding: '10px 15px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', whiteSpace: 'nowrap' }, 
+  innerTabInactive: { backgroundColor: 'transparent', color: COLORS.muted, borderStyle: 'solid', borderWidth: '0 0 2px 0', borderColor: 'transparent', padding: '10px 15px', fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap' },
+  innerContent: { minHeight: '150px' }, detailGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' },
+  detailItem: { backgroundColor: COLORS.cell, padding: '10px', borderRadius: '6px', border: `1px solid ${COLORS.border}` }, detailItemFull: { gridColumn: '1 / -1', backgroundColor: COLORS.cell, padding: '10px', borderRadius: '6px', border: `1px solid ${COLORS.border}` },
+  detailLabel: { display: 'block', color: COLORS.muted, fontSize: '10px', textTransform: 'uppercase', marginBottom: '4px', fontWeight: 'bold', letterSpacing: '0.5px' }, detailValue: { color: COLORS.text, fontSize: '12px', fontWeight: '500' }, detailValueMicro: { color: COLORS.muted, fontSize: '11px', wordBreak: 'break-all' },
+  listContainer: { display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '300px', overflowY: 'auto' }, listItem: { backgroundColor: COLORS.cell, padding: '10px', borderRadius: '6px', fontSize: '12px', color: COLORS.text, border: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center' },
+  
+  actionSection: { display: 'flex', flexDirection: 'column', gap: '15px' }, actionsGrid: { display: 'flex', gap: '10px', flexWrap: 'wrap' },
+  gridBtn: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', backgroundColor: COLORS.cell, color: COLORS.text, border: `1px solid ${COLORS.border}`, padding: '10px', borderRadius: '6px', fontSize: '12px', cursor: 'pointer', minWidth: '120px' },
+  diagBtn: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', backgroundColor: 'transparent', color: '#38BDF8', border: `1px solid #38BDF8`, padding: '10px', borderRadius: '6px', fontSize: '12px', cursor: 'pointer', minWidth: '120px', fontWeight: '600' },
+  dangerZone: { borderTop: `1px solid ${COLORS.border}`, paddingTop: '15px', display: 'flex', flexDirection: 'column', gap: '15px' }, actionBtnWarning: { backgroundColor: 'transparent', color: COLORS.warning, border: `1px solid ${COLORS.warning}`, padding: '12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' },
+  resetContainer: { backgroundColor: COLORS.cell, padding: '15px', borderRadius: '6px', border: `1px solid ${COLORS.border}` }, sectionLabel: { color: COLORS.gold, fontSize: '11px', margin: '0 0 10px 0', textTransform: 'uppercase', fontWeight: 'bold', letterSpacing: '0.5px' }, resetRow: { display: 'flex', gap: '10px' },
+  inputReset: { flex: 1, backgroundColor: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: '10px', borderRadius: '4px', outline: 'none', fontSize: '13px' }, actionBtnSuccess: { backgroundColor: COLORS.success, color: COLORS.bg, border: 'none', padding: '0 15px', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' },
+  groupsBox: { backgroundColor: COLORS.cell, padding: '12px', borderRadius: '6px', border: `1px solid ${COLORS.border}` }, groupItem: { color: COLORS.muted, fontSize: '12px', marginBottom: '6px', borderBottom: `1px solid ${COLORS.border}`, paddingBottom: '6px' }, hintText: { color: COLORS.muted, fontSize: '12px' },
+  
+  textArea: { width: '100%', height: '120px', backgroundColor: COLORS.cell, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: '12px', borderRadius: '6px', boxSizing: 'border-box', marginTop: '10px', resize: 'vertical', outline: 'none', fontSize: '13px' },
+  bulkActionsGrid: { display: 'flex', gap: '10px', marginTop: '15px' }, bulkBtnUnlock: { flex: 1, backgroundColor: 'transparent', color: COLORS.warning, border: `1px solid ${COLORS.warning}`, padding: '10px', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }, bulkBtnEnable: { flex: 1, backgroundColor: 'transparent', color: COLORS.success, border: `1px solid ${COLORS.success}`, padding: '10px', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }, bulkBtnDisable: { flex: 1, backgroundColor: 'transparent', color: COLORS.danger, border: `1px solid ${COLORS.danger}`, padding: '10px', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' },
+  bulkResultBox: { backgroundColor: COLORS.cell, padding: '15px', borderRadius: '6px', marginTop: '20px', border: `1px solid ${COLORS.border}` },
+  
+  commonBox: { backgroundColor: 'transparent', padding: '15px', borderRadius: '6px', border: `1px solid ${COLORS.success}` },
+  diffGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '15px' }, diffCard: { backgroundColor: COLORS.cell, padding: '15px', borderRadius: '6px', border: `1px solid ${COLORS.gold}`, display: 'flex', flexDirection: 'column' },
+  
+  modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(11, 17, 30, 0.95)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' },
+  modalContent: { backgroundColor: COLORS.frame, padding: '25px', borderRadius: '8px', width: '100%', maxWidth: '400px', border: `1px solid ${COLORS.border}` },
+  modalInput: { width: '100%', backgroundColor: COLORS.cell, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: '10px', borderRadius: '4px', boxSizing: 'border-box', outline: 'none', fontSize: '13px' },
+  modalSelect: { width: '100%', backgroundColor: COLORS.cell, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: '10px', borderRadius: '4px', marginTop: '10px', outline: 'none', fontSize: '13px' },
+  modalActions: { display: 'flex', gap: '10px', marginTop: '25px' }, modalCancelBtn: { flex: 1, padding: '10px', backgroundColor: 'transparent', color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }, modalSaveBtn: { flex: 1, padding: '10px', backgroundColor: COLORS.gold, color: COLORS.bg, border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }
+};
+const styleSheet = document.createElement("style"); styleSheet.innerText = `@keyframes spin { 100% { transform: rotate(360deg); } }`; document.head.appendChild(styleSheet);
