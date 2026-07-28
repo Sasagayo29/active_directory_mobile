@@ -7,7 +7,7 @@ import { Lock, User, Server, Globe, ArrowRight, ShieldCheck } from 'lucide-react
 export default function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [server, setServer] = useState('10.205.200.43');
+  const [server, setServer] = useState(''); // Deixe vazio para ativar o Auto-Discovery
   const [domain, setDomain] = useState('kinrossgold.com');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -22,6 +22,8 @@ export default function Login() {
     const formData = new URLSearchParams();
     formData.append('username', username);
     formData.append('password', password);
+    formData.append('server', server || 'AUTO'); // Se estiver vazio, manda a palavra AUTO
+    formData.append('domain', domain);
 
     try {
       const response = await api.post('/token', formData, {
@@ -54,7 +56,7 @@ export default function Login() {
             <span style={styles.iconSpan}><Server size={16} /></span>
             <input 
               type="text" 
-              placeholder="Servidor DC / IP" 
+              placeholder="Servidor DC (Deixe em branco para AUTO)" 
               value={server} 
               onChange={(e) => setServer(e.target.value)} 
               style={styles.input} 

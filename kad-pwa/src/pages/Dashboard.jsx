@@ -301,22 +301,33 @@ export default function Dashboard() {
 
   return (
     <div style={styles.container}>
-      {/* COMPONENTE TOASTER (Substitui os alerts nativos) */}
+      {/* COMPONENTE TOASTER */}
       <Toaster position="top-right" toastOptions={{ style: { background: COLORS.cell, color: COLORS.text, border: `1px solid ${COLORS.border}`, fontSize: '13px' }, success: { iconTheme: { primary: COLORS.success, secondary: COLORS.bg } }, error: { iconTheme: { primary: COLORS.danger, secondary: COLORS.bg } } }} />
 
-      {/* HEADER */}
-      <div style={styles.header}>
-        <div style={styles.headerTitle}><div style={styles.logoBadge}>K</div><h2 style={{ margin: 0, fontSize: '18px', color: COLORS.gold, fontWeight: 600 }}>KAD Mobile</h2></div>
-        <button onClick={handleLogout} style={styles.logoutBtn}><LogOut size={18} /></button>
-      </div>
+      {/* ==================================================== */}
+      {/* CONTAINER FIXO NO TOPO (HEADER + ABAS)               */}
+      {/* ==================================================== */}
+      <div style={{ position: 'sticky', top: 0, zIndex: 100, backgroundColor: COLORS.bg }}>
+        
+        {/* HEADER */}
+        <div style={styles.header}>
+          <div style={styles.headerTitle}>
+            <div style={styles.logoBadge}>K</div>
+            <h2 style={{ margin: 0, fontSize: '18px', color: COLORS.gold, fontWeight: 600 }}>KAD Mobile</h2>
+          </div>
+          <button onClick={handleLogout} style={styles.logoutBtn}><LogOut size={18} /></button>
+        </div>
 
-      {/* NAVEGAÇÃO PRINCIPAL */}
-      <div style={styles.tabContainer}>
-        <button style={activeTab === 'single' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('single')}><Search size={16} /> Identidade</button>
-        <button style={activeTab === 'bulk' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('bulk')}><Layers size={16} /> Lote</button>
-        <button style={activeTab === 'compare' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('compare')}><Scale size={16} /> Comparador</button>
-        <button style={activeTab === 'printers' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('printers')}><Printer size={16} /> Print</button>
+        {/* NAVEGAÇÃO PRINCIPAL */}
+        <div style={styles.tabContainer}>
+          <button style={activeTab === 'single' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('single')}><Search size={16} /> Identidade</button>
+          <button style={activeTab === 'bulk' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('bulk')}><Layers size={16} /> Lote</button>
+          <button style={activeTab === 'compare' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('compare')}><Scale size={16} /> Comparador</button>
+          <button style={activeTab === 'printers' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('printers')}><Printer size={16} /> Print</button>
+        </div>
+        
       </div>
+      {/* ==================================================== */}
 
       <div style={styles.content}>
         

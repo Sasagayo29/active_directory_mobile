@@ -1,16 +1,16 @@
 import os
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import FastAPI, HTTPException, Depends, status, Form
+from fastapi.security import OAuth2PasswordBearer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-from pydantic import BaseModel
 import subprocess
-import socket # Adicione junto aos outros imports no topo
 import json
 import pyodbc
-import ldap3 # Certifique-se de que isso está no topo do seu main.py
+import socket
+import re
+import ldap3 
 from ldap3 import Server, Connection, ALL, SUBTREE
 
 app = FastAPI(title="KAD Mobile API - Módulo Avançado AD com Auditoria")
@@ -28,23 +28,18 @@ class AuditLogger:
     @staticmethod
     def log(operador: str, acao: str, alvo: str, status: str):
         try:
-            # O arquivo será criado na mesma pasta onde a API estiver rodando
             log_file = "KAD_Audit.log" 
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             linha_log = f"[{timestamp}] | Operador: {operador} | Acao: {acao} | Alvo: {alvo} | Status: {status}\n"
-            
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(linha_log)
         except Exception as e:
             print(f"Erro ao gravar log de auditoria: {e}")
 
-# --- CONFIGURAÇÕES DE SEGURANÇA E DOMÍNIO ---
+# --- CONFIGURAÇÕES DE SEGURANÇA ---
 SECRET_KEY = "uma-chave-super-secreta-kinross" 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120 
-
-AD_SERVER = '10.205.200.43' 
-AD_SEARCH_BASE = 'DC=KinrossGold,DC=com'
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -69,7 +64,7 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
-# --- JWT & AUTENTICAÇÃO ---
+# --- JWT & AUTENTICAÇÃO DINÂMICA ---
 def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -86,26 +81,54 @@ def get_current_credentials(token: str = Depends(oauth2_scheme)):
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         password: str = payload.get("pwd")
-        if not username or not password:
+        server: str = payload.get("srv")
+        domain: str = payload.get("dom")
+        
+        if not username or not password or not server or not domain:
             raise credentials_exception
-        return {"username": username, "password": password}
+            
+        # O PULO DO GATO: Calcula a base de pesquisa dinamicamente baseado no domínio fornecido
+        search_base = ",".join([f"DC={p}" for p in domain.split('.')])
+        
+        return {
+            "username": username, 
+            "password": password, 
+            "server": server, 
+            "domain": domain,
+            "search_base": search_base
+        }
     except JWTError:
         raise credentials_exception
 
 def get_ldap_connection(creds: dict):
-    server = Server(AD_SERVER, get_info=ALL)
-    full_username = f"{creds['username']}@kinrossgold.com"
+    domain = creds['domain']
+    server_ip = creds['server']
+    
+    # --- MOTOR DE AUTO-DISCOVERY DO ACTIVE DIRECTORY ---
+    if not server_ip or server_ip.upper() == 'AUTO':
+        try:
+            # O Python resolve o domínio e pega o IP do DC ativo igualzinho ao comando Ping!
+            server_ip = socket.gethostbyname(domain)
+        except socket.gaierror:
+            raise HTTPException(status_code=400, detail=f"Falha de DNS: Não foi possível localizar um servidor para {domain}")
+    # ----------------------------------------------------
+    
+    server = Server(server_ip, get_info=ALL)
+    full_username = f"{creds['username']}@{domain}"
     try:
         conn = Connection(server, user=full_username, password=creds['password'], auto_bind=True)
         return conn
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Erro de autenticação no AD: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Erro de autenticação no Servidor {server_ip}: {str(e)}")
 
 # --- MOTOR DE POWERSHELL DINÂMICO ---
 def run_powershell(command: str, creds: dict, return_json: bool = True):
+    # Gera o NetBIOS dinâmico para o WinRM (Ex: kinrossgold.com -> kinrossgold)
+    domain_netbios = creds['domain'].split('.')[0]
+    
     auth_prefix = (
         f"$secpasswd = ConvertTo-SecureString '{creds['password']}' -AsPlainText -Force; "
-        f"$mycreds = New-Object System.Management.Automation.PSCredential ('KinrossGold\\{creds['username']}', $secpasswd); "
+        f"$mycreds = New-Object System.Management.Automation.PSCredential ('{domain_netbios}\\{creds['username']}', $secpasswd); "
     )
     
     suffix = " | ConvertTo-Json -Compress -Depth 5" if return_json else ""
@@ -124,15 +147,11 @@ def run_powershell(command: str, creds: dict, return_json: bool = True):
         
         if result.returncode != 0:
             erro_real = result.stderr.strip() if result.stderr else result.stdout.strip()
-            
-            # INTERCEPTADOR AMIGÁVEL PARA WINRM OFFLINE
             if "PSRemotingTransportException" in erro_real or "WinRMOperationTimeout" in erro_real or "Falha ao conectar" in erro_real:
                 raise HTTPException(status_code=400, detail="A máquina alvo está offline, fora da rede ou com o Firewall bloqueando o WinRM.")
-                
             raise HTTPException(status_code=400, detail=f"Erro no WinRM: {erro_real}")
             
         stdout_str = result.stdout.strip()
-        
         if not return_json or not stdout_str:
             return {"status": "success", "message": stdout_str or "Executado com sucesso."}
             
@@ -145,15 +164,26 @@ def run_powershell(command: str, creds: dict, return_json: bool = True):
         raise HTTPException(status_code=400, detail="Tempo limite excedido. O alvo não respondeu.")
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=400, detail=f"Falha de execução do Processo: {str(e)}")
-    
+
 # --- ENDPOINTS BÁSICOS E BUSCA ---
 
 @app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    creds = {"username": form_data.username, "password": form_data.password}
+async def login_for_access_token(
+    username: str = Form(...), 
+    password: str = Form(...),
+    server: str = Form("AUTO"), # <--- Mudamos o padrão para AUTO-DISCOVERY
+    domain: str = Form("kinrossgold.com")
+):
+    creds = {"username": username, "password": password, "server": server, "domain": domain}
     conn = get_ldap_connection(creds)
     conn.unbind()
-    access_token = create_access_token(data={"sub": form_data.username, "pwd": form_data.password})
+    
+    access_token = create_access_token(data={
+        "sub": username, 
+        "pwd": password, 
+        "srv": server, 
+        "dom": domain
+    })
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/users/{search_term}")
@@ -171,9 +201,8 @@ def get_user(search_term: str, creds: dict = Depends(get_current_credentials)):
             f")"
         )
         
-        # Novos atributos adicionados na varredura
         conn.search(
-            AD_SEARCH_BASE, 
+            creds['search_base'], 
             ldap_filter, 
             search_scope=SUBTREE, 
             attributes=[
@@ -208,7 +237,6 @@ def get_user(search_term: str, creds: dict = Depends(get_current_credentials)):
             grupos = [str(g).split(',')[0].replace('CN=', '') for g in entry.memberOf.values] if 'memberOf' in entry and entry.memberOf else []
             membros = [str(m).split(',')[0].replace('CN=', '') for m in entry.member.values] if 'member' in entry and entry.member else []
             
-            # --- FORMATAÇÃO DOS NOVOS DADOS ---
             mgr = str(entry.managedBy.value) if 'managedBy' in entry and entry.managedBy.value else ""
             manager_clean = mgr.split(',')[0].replace('CN=', '') if mgr else "N/A"
             
@@ -253,8 +281,6 @@ def get_user(search_term: str, creds: dict = Depends(get_current_credentials)):
                 "Type": obj_type,
                 "MemberOf": sorted(grupos),
                 "Members": sorted(membros),
-                
-                # --- METADADOS MAPEDADOS ---
                 "Manager": manager_clean,
                 "LastLogon": last_logon,
                 "Created": created,
@@ -280,7 +306,7 @@ def get_user(search_term: str, creds: dict = Depends(get_current_credentials)):
 def toggle_account_status(username: str, creds: dict = Depends(get_current_credentials)):
     conn = get_ldap_connection(creds)
     try:
-        conn.search(AD_SEARCH_BASE, f"(sAMAccountName={username})", attributes=['userAccountControl'])
+        conn.search(creds['search_base'], f"(sAMAccountName={username})", attributes=['userAccountControl'])
         if not conn.entries:
             raise HTTPException(status_code=404, detail="Objeto não encontrado no AD.")
             
@@ -302,7 +328,7 @@ def toggle_account_status(username: str, creds: dict = Depends(get_current_crede
 def edit_profile(username: str, payload: ProfileEdit, creds: dict = Depends(get_current_credentials)):
     conn = get_ldap_connection(creds)
     try:
-        conn.search(AD_SEARCH_BASE, f"(sAMAccountName={username})")
+        conn.search(creds['search_base'], f"(sAMAccountName={username})")
         if not conn.entries:
             raise HTTPException(status_code=404, detail="Objeto não encontrado.")
             
@@ -330,12 +356,11 @@ def edit_profile(username: str, payload: ProfileEdit, creds: dict = Depends(get_
 def unlock_user(username: str, creds: dict = Depends(get_current_credentials)):
     conn = get_ldap_connection(creds)
     try:
-        conn.search(AD_SEARCH_BASE, f"(sAMAccountName={username})")
+        conn.search(creds['search_base'], f"(sAMAccountName={username})")
         if not conn.entries:
             raise HTTPException(status_code=404, detail="Objeto não encontrado.")
         
         entry = conn.entries[0]
-        # O valor 0 zera o contador de bloqueio no AD
         success = conn.modify(entry.entry_dn, {'lockoutTime': [(ldap3.MODIFY_REPLACE, [0])]})
         
         if not success:
@@ -350,14 +375,13 @@ def unlock_user(username: str, creds: dict = Depends(get_current_credentials)):
 def reset_password(username: str, payload: PasswordReset, creds: dict = Depends(get_current_credentials)):
     conn = get_ldap_connection(creds)
     try:
-        conn.search(AD_SEARCH_BASE, f"(sAMAccountName={username})")
+        conn.search(creds['search_base'], f"(sAMAccountName={username})")
         if not conn.entries:
             raise HTTPException(status_code=404, detail="Objeto não encontrado.")
             
         entry = conn.entries[0]
         changes = {}
         
-        # A senha via LDAP precisa ser convertida para UTF-16-LE com aspas em volta
         pwd_encoded = f'"{payload.new_password}"'.encode('utf-16-le')
         changes['unicodePwd'] = [(ldap3.MODIFY_REPLACE, [pwd_encoded])]
         
@@ -382,7 +406,7 @@ def list_ous(creds: dict = Depends(get_current_credentials)):
     conn = get_ldap_connection(creds)
     try:
         conn.search(
-            AD_SEARCH_BASE, 
+            creds['search_base'], 
             "(objectClass=organizationalUnit)", 
             search_scope=SUBTREE, 
             attributes=['ou']
@@ -396,12 +420,11 @@ def list_ous(creds: dict = Depends(get_current_credentials)):
 def move_object(username: str, payload: MoveObject, creds: dict = Depends(get_current_credentials)):
     conn = get_ldap_connection(creds)
     try:
-        conn.search(AD_SEARCH_BASE, f"(sAMAccountName={username})", attributes=['cn'])
+        conn.search(creds['search_base'], f"(sAMAccountName={username})", attributes=['cn'])
         if not conn.entries:
             raise HTTPException(status_code=404, detail="Objeto não encontrado.")
             
         entry = conn.entries[0]
-        # modify_dn é o comando LDAP nativo para movimentar objetos
         success = conn.modify_dn(entry.entry_dn, f"CN={entry.cn}", new_superior=payload.new_ou)
         
         if not success:
@@ -426,7 +449,7 @@ def bulk_operations(action: str, payload: BulkAction, creds: dict = Depends(get_
         
         for user in payload.usernames:
             try:
-                conn.search(AD_SEARCH_BASE, f"(sAMAccountName={user})", attributes=['userAccountControl'])
+                conn.search(creds['search_base'], f"(sAMAccountName={user})", attributes=['userAccountControl'])
                 if not conn.entries:
                     errors.append({"user": user, "error": "Login não encontrado no AD"})
                     continue
@@ -460,7 +483,7 @@ def get_computer_local_groups(hostname: str, creds: dict = Depends(get_current_c
     network_target = hostname.rstrip('$')
     
     if "." not in network_target:
-        network_target = f"{network_target}.kinrossgold.com"
+        network_target = f"{network_target}.{creds['domain']}"
     
     script_block = (
         "$groups = Get-LocalGroup -ErrorAction SilentlyContinue; "
@@ -476,8 +499,6 @@ def get_computer_local_groups(hostname: str, creds: dict = Depends(get_current_c
         "} "
         "return $res"
     )
-    
-    # Injeta a regra de expiração de sessão do WinRM para ele desistir se a máquina sumir
     script = (
         f"$so = New-PSSessionOption -OpenTimeout 10000 -OperationTimeout 20000; "
         f"Invoke-Command -ComputerName '{network_target}' -SessionOption $so -ScriptBlock {{ {script_block} }} -Credential $mycreds"
@@ -487,33 +508,28 @@ def get_computer_local_groups(hostname: str, creds: dict = Depends(get_current_c
     AuditLogger.log(creds["username"], "ConsultarGruposLocais", network_target, "SUCESSO")
     return {"data": data}
 
-import re
+class CompareUsers(BaseModel):
+    usernames: list[str]
 
 # --- MÓDULO 6: DIAGNÓSTICOS REMOTOS (PING, WMI, SPLUNK) ---
 
 @app.get("/diagnostics/{target}/{diag_type}")
 def run_diagnostics(target: str, diag_type: str, creds: dict = Depends(get_current_credentials)):
-    """Executa diagnósticos diretos via PowerShell com captura de terminal."""
-    
-    # Permitimos os atalhos "print:" e espaços na validação de segurança do Regex
     if not re.match(r"^[a-zA-Z0-9.\-_$: ]+$", target):
         raise HTTPException(status_code=400, detail="Alvo inválido.")
         
-    ## Limpeza cirúrgica: Removemos o atalho 'print:' e cortamos no separador ':'
     network_target = target.rstrip('$').lower()
     network_target = network_target.replace("print:", "").replace("prn:", "").strip()
     
     if ":" in network_target:
         network_target = network_target.split(":")[0].strip()
     
-    # Auto-completa o domínio se for apenas o hostname para o WinRM
     if "." not in network_target and not network_target.replace(".", "").isdigit():
-        network_target = f"{network_target}.kinrossgold.com"
+        network_target = f"{network_target}.{creds['domain']}"
         
     if diag_type == "ping":
         script = f"Test-Connection -ComputerName '{network_target}' -Count 4 -ErrorAction SilentlyContinue | Format-Table Address, IPv4Address, ResponseTime"
     elif diag_type == "wmi":
-        # Empacotamos o WMI dentro do Invoke-Command 
         script = (
             f"Invoke-Command -ComputerName '{network_target}' -Credential $mycreds -ScriptBlock {{ "
             f"Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue | Select-Object LastBootUpTime | Format-List; "
@@ -521,8 +537,11 @@ def run_diagnostics(target: str, diag_type: str, creds: dict = Depends(get_curre
             f"}}"
         )
     elif diag_type == "splunk":
-        pdc_ip = AD_SERVER 
-        # O Splunk busca nos logs pelo nome exato do AD, então limpamos apenas o '$' e os espaços
+        # Resolve o IP dinamicamente para o Splunk também
+        pdc_ip = creds['server'] 
+        if not pdc_ip or pdc_ip.upper() == 'AUTO':
+            pdc_ip = socket.gethostbyname(creds['domain'])
+            
         nome_limpo = target.rstrip('$').strip()
         script = (
             f"Invoke-Command -ComputerName '{pdc_ip}' -Credential $mycreds -ScriptBlock {{ "
@@ -533,9 +552,10 @@ def run_diagnostics(target: str, diag_type: str, creds: dict = Depends(get_curre
     else:
         raise HTTPException(status_code=400, detail="Diagnóstico desconhecido.")
         
+    domain_netbios = creds['domain'].split('.')[0]
     auth_prefix = (
         f"$secpasswd = ConvertTo-SecureString '{creds['password']}' -AsPlainText -Force; "
-        f"$mycreds = New-Object System.Management.Automation.PSCredential ('KinrossGold\\{creds['username']}', $secpasswd); "
+        f"$mycreds = New-Object System.Management.Automation.PSCredential ('{domain_netbios}\\{creds['username']}', $secpasswd); "
     )
     
     full_command = f"{auth_prefix} {script}"
@@ -558,12 +578,11 @@ def run_diagnostics(target: str, diag_type: str, creds: dict = Depends(get_curre
 
 @app.post("/compare")
 def compare_users(payload: CompareUsers, creds: dict = Depends(get_current_credentials)):
-    """Cruza o MemberOf de múltiplos usuários para gerar o relatório de convergência."""
     conn = get_ldap_connection(creds)
     try:
         users_data = {}
         for u in payload.usernames:
-            conn.search(AD_SEARCH_BASE, f"(sAMAccountName={u})", search_scope=SUBTREE, attributes=['sAMAccountName', 'displayName', 'title', 'memberOf'])
+            conn.search(creds['search_base'], f"(sAMAccountName={u})", search_scope=SUBTREE, attributes=['sAMAccountName', 'displayName', 'title', 'memberOf'])
             if conn.entries:
                 entry = conn.entries[0]
                 groups = set(str(g).split(',')[0].replace('CN=', '') for g in entry.memberOf.values) if ('memberOf' in entry and entry.memberOf) else set()
@@ -576,14 +595,12 @@ def compare_users(payload: CompareUsers, creds: dict = Depends(get_current_crede
         if not users_data:
             raise HTTPException(status_code=404, detail="Nenhum usuário válido encontrado no AD.")
 
-        # Realiza a interseção matemática de todos os conjuntos de grupos
         all_sets = [set(data["Groups"]) for data in users_data.values()]
         common_groups = set.intersection(*all_sets) if all_sets else set()
 
-        # Calcula a diferença (Grupos Exclusivos) para cada usuário
         for u, data in users_data.items():
             data["ExclusiveGroups"] = sorted(list(set(data["Groups"]) - common_groups))
-            del data["Groups"] # Limpa a lista original bruta para economizar payload
+            del data["Groups"] 
 
         AuditLogger.log(creds["username"], "ComparadorGeral", f"{len(payload.usernames)} usuários", "SUCESSO")
         return {
@@ -601,12 +618,11 @@ class VetorhUpdate(BaseModel):
     techacc: str
 
 def get_db_connection():
-    """Lógica inteligente que descobre o Driver SQL instalado na máquina"""
     server = r'PTU-SQL-03\SQLSEN' 
     database = 'DKBMVETORHPD0' 
     
     drivers_instalados = pyodbc.drivers()
-    driver_escolhido = '{SQL Server}' # Fallback universal nativo do Windows
+    driver_escolhido = '{SQL Server}'
     
     if 'ODBC Driver 17 for SQL Server' in drivers_instalados: 
         driver_escolhido = '{ODBC Driver 17 for SQL Server}'
@@ -620,7 +636,6 @@ def get_db_connection():
 
 @app.get("/vetorh/{matricula}")
 def get_vetorh_access(matricula: str, creds: dict = Depends(get_current_credentials)):
-    """Consulta o acesso técnico do colaborador no Vetorh."""
     try:
         mat_int = int(matricula)
         conn = get_db_connection()
@@ -641,10 +656,8 @@ def get_vetorh_access(matricula: str, creds: dict = Depends(get_current_credenti
 
 @app.post("/vetorh/update")
 def update_vetorh_access(payload: VetorhUpdate, creds: dict = Depends(get_current_credentials)):
-    """Atualiza a procedure de acesso no banco de dados (Unitário ou Lote)."""
     sucessos = 0
     erros = []
-    
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -668,21 +681,18 @@ def update_vetorh_access(payload: VetorhUpdate, creds: dict = Depends(get_curren
 
 # --- MÓDULO 9: GESTÃO DE IMPRESSORAS (WINRM) ---
 
-def formatar_fqdn(servidor: str) -> str:
+def formatar_fqdn(servidor: str, dominio_padrao: str) -> str:
     serv_limpo = servidor.lower().replace("print:", "").replace("prn:", "").strip()
     
     if ":" in serv_limpo:
         serv_limpo = serv_limpo.split(":")[0].strip()
         
     if "." not in serv_limpo and not serv_limpo.replace(".", "").isdigit():
-        return f"{serv_limpo}.kinrossgold.com"
+        return f"{serv_limpo}.{dominio_padrao}"
     return serv_limpo
 
 @app.get("/printers/{server}")
 def list_printers(server: str, filter: str = "*", creds: dict = Depends(get_current_credentials)):
-    """Mapeia as filas de impressão de um Print Server remoto com suporte a filtros dinâmicos."""
-    
-    # Separação Inteligente: "ptu-prn-01 : geo" vira Servidor="ptu-prn-01" e Filtro="geo"
     servidor_real = server
     filtro_real = filter
     
@@ -691,7 +701,7 @@ def list_printers(server: str, filter: str = "*", creds: dict = Depends(get_curr
         servidor_real = partes[0].strip()
         filtro_real = partes[1].strip()
         
-    fqdn = formatar_fqdn(servidor_real)
+    fqdn = formatar_fqdn(servidor_real, creds['domain'])
     termo = f"*{filtro_real}*" if filtro_real != "*" else "*"
     
     script_block = (
@@ -712,8 +722,7 @@ def list_printers(server: str, filter: str = "*", creds: dict = Depends(get_curr
 
 @app.post("/printers/{server}/{queue}/clear")
 def clear_print_queue(server: str, queue: str, creds: dict = Depends(get_current_credentials)):
-    """Exclui todos os trabalhos pendentes em uma fila específica."""
-    fqdn = formatar_fqdn(server)
+    fqdn = formatar_fqdn(server, creds['domain'])
     script = f"Invoke-Command -ComputerName '{fqdn}' -ScriptBlock {{ Get-PrintJob -PrinterName '{queue}' -ErrorAction SilentlyContinue | Remove-PrintJob }} -Credential $mycreds"
     run_powershell(script, creds, return_json=False)
     AuditLogger.log(creds["username"], "LimparFila", queue, f"SUCESSO (Server: {fqdn})")
@@ -721,8 +730,7 @@ def clear_print_queue(server: str, queue: str, creds: dict = Depends(get_current
 
 @app.post("/printers/{server}/restart-spooler")
 def restart_spooler(server: str, creds: dict = Depends(get_current_credentials)):
-    """Reinicia o serviço de Spooler do servidor."""
-    fqdn = formatar_fqdn(server)
+    fqdn = formatar_fqdn(server, creds['domain'])
     script = f"Invoke-Command -ComputerName '{fqdn}' -ScriptBlock {{ Restart-Service Spooler -Force }} -Credential $mycreds"
     run_powershell(script, creds, return_json=False)
     AuditLogger.log(creds["username"], "RestartSpooler", fqdn, "SUCESSO")
@@ -732,23 +740,19 @@ def restart_spooler(server: str, creds: dict = Depends(get_current_credentials))
 
 @app.get("/computers/{hostname}/security")
 def get_computer_security(hostname: str, creds: dict = Depends(get_current_credentials)):
-    """Extrai a senha LAPS e chaves do BitLocker nativamente via LDAP."""
     conn = get_ldap_connection(creds)
     try:
         network_target = hostname.rstrip('$')
         
-        # 1. Localiza a máquina e extrai a senha do LAPS
-        # Tenta buscar com o schema novo e legado. Se o AD não possuir o schema novo, faz o fallback.
         try:
             conn.search(
-                AD_SEARCH_BASE, 
+                creds['search_base'], 
                 f"(sAMAccountName={network_target}$)", 
                 attributes=['distinguishedName', 'ms-Mcs-AdmPwd', 'msLAPS-Password']
             )
         except ldap3.core.exceptions.LDAPAttributeError:
-            # Fallback: O AD da empresa usa apenas o LAPS legado
             conn.search(
-                AD_SEARCH_BASE, 
+                creds['search_base'], 
                 f"(sAMAccountName={network_target}$)", 
                 attributes=['distinguishedName', 'ms-Mcs-AdmPwd']
             )
@@ -765,7 +769,6 @@ def get_computer_security(hostname: str, creds: dict = Depends(get_current_crede
         elif 'msLAPS-Password' in entry and entry['msLAPS-Password']:
             laps_pwd = str(entry['msLAPS-Password'].value)
 
-        # 2. Localiza as chaves do BitLocker (Armazenadas como objetos filhos da máquina)
         conn.search(
             comp_dn, 
             "(objectClass=msFVE-RecoveryInformation)", 
@@ -776,16 +779,13 @@ def get_computer_security(hostname: str, creds: dict = Depends(get_current_crede
         bitlocker_keys = []
         for b_entry in conn.entries:
             if 'msFVE-RecoveryPassword' in b_entry and b_entry['msFVE-RecoveryPassword']:
-                # Formata a data de criação da chave para exibição limpa
                 data_criacao = str(b_entry['whenCreated'].value)[:16] if 'whenCreated' in b_entry else "N/A"
                 bitlocker_keys.append({
                     "key": str(b_entry['msFVE-RecoveryPassword'].value),
                     "date": data_criacao.replace('T', ' ')
                 })
 
-        # Ordena as chaves da mais recente para a mais antiga
         bitlocker_keys.sort(key=lambda x: x['date'], reverse=True)
-
         AuditLogger.log(creds["username"], "ConsultarSeguranca", network_target, "LAPS/BitLocker extraídos")
         return {"laps": laps_pwd, "bitlocker": bitlocker_keys}
     finally:
