@@ -5,7 +5,8 @@ import toast, { Toaster } from 'react-hot-toast';
 import { 
   User, Monitor, Users, Search, Layers, Scale, Database, Printer, 
   CheckCircle, Ban, Unlock, Activity, BarChart, ArrowRight, ArrowLeft, 
-  Tag, LogOut, Settings, Server, Trash2, RefreshCw, AlertTriangle 
+  Tag, LogOut, Settings, Server, Trash2, RefreshCw, AlertTriangle,
+  FileText, Copy, Clock
 } from 'lucide-react';
 
 export default function Dashboard() {
@@ -21,6 +22,8 @@ export default function Dashboard() {
   
   const [newPassword, setNewPassword] = useState('');
   const [resetLoading, setResetLoading] = useState(false);
+  const [forceChange, setForceChange] = useState(true);
+  const [unlockAccount, setUnlockAccount] = useState(true);
   const [localGroups, setLocalGroups] = useState(null);
   const [loadingGroups, setLoadingGroups] = useState(false);
 
@@ -32,7 +35,7 @@ export default function Dashboard() {
   const [selectedOu, setSelectedOu] = useState('');
   const [loadingOus, setLoadingOus] = useState(false);
 
-  // Novo: Modal de Confirmação Customizado
+  // Modal de Confirmação Customizado
   const [confirmConfig, setConfirmConfig] = useState({ isOpen: false, title: '', message: '', action: null });
   // Estados: Modal LAPS/BitLocker
   const [modalSecurityOpen, setModalSecurityOpen] = useState(false);
@@ -76,10 +79,141 @@ export default function Dashboard() {
     setConfirmConfig({ ...confirmConfig, isOpen: false });
   };
 
+  // --- MELHORIA 2: HISTÓRICO DE BUSCAS RECENTES (LOCALSTORAGE) ---
+  const [recentSearches, setRecentSearches] = useState(() => {
+    const saved = localStorage.getItem('@kad_recent_searches');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const saveRecentSearch = (term) => {
+    if (!term) return;
+    const cleanTerm = term.trim().toUpperCase();
+    setRecentSearches(prev => {
+      const updated = [cleanTerm, ...prev.filter(i => i !== cleanTerm)].slice(0, 5);
+      localStorage.setItem('@kad_recent_searches', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  // --- MELHORIA 3: ESTADOS DO VISOR DE AUDITORIA ---
+  const [modalAuditOpen, setModalAuditOpen] = useState(false);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const handleOpenAudit = async () => {
+    setModalAuditOpen(true);
+    setAuditLoading(true);
+    try {
+      const response = await api.get('/audit/latest?limit=20');
+      setAuditLogs(response.data.data || []);
+    } catch (err) {
+      toast.error('Erro ao consultar histórico de auditoria.');
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  // --- MELHORIA 1: COPIAR RESUMO DO CHAMADO PARA TEAMS/WHATSAPP ---
+  const copiarResumoCredenciais = () => {
+    if (!selectedUser || !newPassword) {
+      return toast.error('Gere ou digite uma senha antes de copiar o resumo.');
+    }
+    const texto = `🔒 *Atualização de Credenciais - KAD Mobile*\n\n` +
+      `👤 *Usuário:* ${selectedUser.SamAccountName}\n` +
+      `🔑 *Senha Provisória:* ${newPassword}\n` +
+      `ℹ️ *Status:* Conta desbloqueada.\n` +
+      `⚠️ *Nota:* ${forceChange ? 'Será exigida a alteração da senha no primeiro logon.' : 'Senha configurada em modo contínuo.'}`;
+    
+    navigator.clipboard.writeText(texto);
+    toast.success('Resumo copiado para a área de transferência!');
+  };
+
+  // --- MELHORIA 5: TRAVA DE DIGITAÇÃO ANTI-ERRO NO MODAL ---
+  const [confirmInputText, setConfirmInputText] = useState('');
+  const [requireSecurityWord, setRequireSecurityWord] = useState(false);
+
+  // Gerador de Senha Forte
+  const gerarSenhaAleatoria = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%&*';
+    let senha = 'K1@';
+    for (let i = 0; i < 9; i++) {
+      senha += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setNewPassword(senha);
+  };
+
+  // ESTADO: Resumo do AD (Opção 4)
+  const [summaryData, setSummaryData] = useState({ locked_users: 0, pending_passwords: 0, status: '...' });
+
+  const fetchSummary = async () => {
+    try {
+      const res = await api.get('/dashboard/summary');
+      setSummaryData(res.data);
+    } catch (err) {
+      if (err.response?.status === 401) {
+        toast.error('Sessão expirada. Por favor, faça login novamente.');
+        handleLogout();
+      } else {
+        console.error('Falha ao carregar resumo da tela inicial');
+      }
+    }
+  };
+
+  // Carrega os cards automaticamente ao abrir o Dashboard
+  React.useEffect(() => {
+    fetchSummary();
+  }, []);
+
+  // Carrega os cards automaticamente ao abrir o Dashboard
+  React.useEffect(() => {
+    fetchSummary();
+  }, []);
+
+  // ESTADO: Adicionar / Remover Grupo (Opção 2)
+  const [newGroupName, setNewGroupName] = useState('');
+  const [groupLoading, setGroupLoading] = useState(false);
+
+  const handleAddGroup = async () => {
+    if (!newGroupName.trim()) return toast.error('Digite o nome do grupo.');
+    setGroupLoading(true);
+    try {
+      const res = await api.post(`/users/${selectedUser.SamAccountName}/groups/add`, {
+        group_name: newGroupName.trim()
+      });
+      toast.success(res.data.message);
+      setNewGroupName('');
+      handleSearch(); // Recarrega o usuário atualizado
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Falha ao adicionar grupo.');
+    } finally {
+      setGroupLoading(false);
+    }
+  };
+
+  const handleRemoveGroup = (groupName) => {
+    showConfirm(
+      'Remover do Grupo',
+      `Tem certeza que deseja remover ${selectedUser.SamAccountName} do grupo "${groupName}"?`,
+      async () => {
+        try {
+          const res = await api.post(`/users/${selectedUser.SamAccountName}/groups/remove`, {
+            group_name: groupName
+          });
+          toast.success(res.data.message);
+          handleSearch();
+        } catch (err) {
+          toast.error(err.response?.data?.detail || 'Erro ao remover do grupo.');
+        }
+      }
+    );
+  };
+
   // ==================== FUNÇÕES CORE AD ====================
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
     if (!searchTerm.trim()) return;
+    
+    saveRecentSearch(searchTerm);
     setLoading(true); setError(''); setSearchResults([]); setSelectedUser(null); setNewPassword(''); setLocalGroups(null); setInnerTab('geral');
     try {
       const response = await api.get(`/users/${searchTerm}`);
@@ -169,7 +303,6 @@ export default function Dashboard() {
   };
 
   const pingPrinter = async (printerName, portName) => {
-    // Extrai o IP caso a porta venha com prefixos (Ex: IP_10.205.99.50 vira 10.205.99.50)
     const ipMatch = portName?.match(/\d{1,3}(\.\d{1,3}){3}/);
     const targetIp = ipMatch ? ipMatch[0] : portName;
 
@@ -214,11 +347,28 @@ export default function Dashboard() {
     const usersArray = bulkInput.split(',').map(u => u.trim()).filter(u => u !== '');
     if (usersArray.length === 0) return toast.error('Insira os identificadores antes de continuar.');
     
-    showConfirm('Processamento em Lote', `Deseja executar a ação em massa para ${usersArray.length} objeto(s)?`, async () => {
-      setBulkLoading(true); setBulkResult(null);
-      try { const response = await api.post(`/bulk/${actionType}`, { usernames: usersArray }); setBulkResult(response.data); toast.success('Lote finalizado.'); } 
-      catch (err) { toast.error('Falha crítica ao processar o lote.'); } finally { setBulkLoading(false); }
-    });
+    const isDestructive = actionType === 'disable';
+    setRequireSecurityWord(isDestructive);
+    setConfirmInputText('');
+
+    showConfirm(
+      'Processamento em Lote', 
+      isDestructive 
+        ? `Atenção! Você está prestes a DESATIVAR ${usersArray.length} objeto(s). Digite "CONFIRMAR" para autorizar.`
+        : `Deseja executar a ação em massa para ${usersArray.length} objeto(s)?`, 
+      async () => {
+        setBulkLoading(true); setBulkResult(null);
+        try { 
+          const response = await api.post(`/bulk/${actionType}`, { usernames: usersArray }); 
+          setBulkResult(response.data); 
+          toast.success('Lote finalizado.'); 
+        } catch (err) { 
+          toast.error('Falha crítica ao processar o lote.'); 
+        } finally { 
+          setBulkLoading(false); 
+        }
+      }
+    );
   };
 
   // ==================== AÇÕES BÁSICAS AD ====================
@@ -230,8 +380,19 @@ export default function Dashboard() {
   const handleResetPassword = async () => {
     if (!newPassword || newPassword.length < 8) return toast.error('A senha deve conter no mínimo 8 caracteres.');
     setResetLoading(true);
-    try { await api.post(`/users/${selectedUser.SamAccountName}/reset-password`, { new_password: newPassword, force_change: true, unlock_account: true }); toast.success('Credenciais redefinidas e conta desbloqueada.'); setNewPassword(''); } 
-    catch (err) { toast.error(err.response?.data?.detail || 'Erro ao resetar senha.'); } finally { setResetLoading(false); }
+    try { 
+      await api.post(`/users/${selectedUser.SamAccountName}/reset-password`, { 
+        new_password: newPassword, 
+        force_change: forceChange,
+        unlock_account: unlockAccount
+      }); 
+      toast.success('Credenciais redefinidas com sucesso!'); 
+      setNewPassword(''); 
+    } catch (err) { 
+      toast.error(err.response?.data?.detail || 'Erro ao resetar senha.'); 
+    } finally { 
+      setResetLoading(false); 
+    }
   };
 
   const handleToggleStatus = () => {
@@ -263,7 +424,6 @@ export default function Dashboard() {
     try { 
       const response = await api.get(`/computers/${selectedUser.SamAccountName}/local-groups`); 
       const dt = response.data.data;
-      // Garante que o frontend sempre receba um Array, evitando a quebra do .map()
       const arr = Array.isArray(dt) ? dt : (dt ? [dt] : []);
       setLocalGroups(arr); 
       toast.success('Grupos mapeados.'); 
@@ -315,7 +475,14 @@ export default function Dashboard() {
             <div style={styles.logoBadge}>K</div>
             <h2 style={{ margin: 0, fontSize: '18px', color: COLORS.gold, fontWeight: 600 }}>KAD Mobile</h2>
           </div>
-          <button onClick={handleLogout} style={styles.logoutBtn}><LogOut size={18} /></button>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <button onClick={handleOpenAudit} style={styles.headerIconBtn} title="Histórico de Auditoria">
+              <FileText size={18} />
+            </button>
+            <button onClick={handleLogout} style={styles.logoutBtn} title="Sair">
+              <LogOut size={18} />
+            </button>
+          </div>
         </div>
 
         {/* NAVEGAÇÃO PRINCIPAL */}
@@ -342,36 +509,84 @@ export default function Dashboard() {
             </form>
             {error && <div style={styles.errorBox}><Ban size={16} /> {error}</div>}
 
+            {/* PÍLULAS DE BUSCAS RECENTES */}
+            {recentSearches.length > 0 && !selectedUser && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '15px' }}>
+                <span style={{ color: COLORS.muted, fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <Clock size={12} /> Recentes:
+                </span>
+                {recentSearches.map((term, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      setSearchTerm(term);
+                      setTimeout(() => handleSearch(), 50);
+                    }}
+                    style={styles.recentChip}
+                  >
+                    {term}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* MELHORIA 4: CARDS DE RESUMO NA TELA INICIAL */}
+            {!selectedUser && searchResults.length === 0 && (
+              <div style={styles.summaryGrid}>
+                <div style={styles.summaryCard}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={styles.summaryLabel}>Contas Bloqueadas</span>
+                    <AlertTriangle size={18} color={COLORS.warning} />
+                  </div>
+                  <h3 style={styles.summaryValueWarning}>{summaryData.locked_users}</h3>
+                  <span style={styles.summarySub}>No Active Directory agora</span>
+                </div>
+
+                <div style={styles.summaryCard}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={styles.summaryLabel}>Troca Pendente</span>
+                    <Clock size={18} color={COLORS.gold} />
+                  </div>
+                  <h3 style={styles.summaryValueGold}>{summaryData.pending_passwords}</h3>
+                  <span style={styles.summarySub}>pwdLastSet = 0</span>
+                </div>
+
+                <div style={{ ...styles.summaryCard, gridColumn: '1 / -1' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={styles.summaryLabel}>Status do Serviço LDAP</span>
+                    <span style={{ color: COLORS.success, fontWeight: 'bold', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <CheckCircle size={14} /> {summaryData.status}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {searchResults.length > 1 && !selectedUser && (
-              <div>
-                <div style={styles.listGrid}>
-                  {searchResults.length > 1 && !selectedUser && (
               <div>
                 <p style={{ color: COLORS.gold, marginBottom: '15px', fontWeight: 'bold' }}>Resultados da pesquisa ({searchResults.length}):</p>
                 <div style={styles.listGrid}>
                   {searchResults.map((item, idx) => {
                     const isDanger = !item.Enabled || item.LockedOut;
-                    
                     return (
-                    <div key={idx} onClick={() => selectUserForDetail(item)} style={{...styles.miniCard, borderColor: isDanger ? COLORS.danger : COLORS.border}}>
-                      <div style={{...styles.miniAvatar, color: isDanger ? COLORS.danger : COLORS.gold, backgroundColor: isDanger ? 'rgba(239, 68, 68, 0.1)' : COLORS.cell}}>
-                        {renderIcon(item.Type)}
+                      <div key={idx} onClick={() => selectUserForDetail(item)} style={{...styles.miniCard, borderColor: isDanger ? COLORS.danger : COLORS.border}}>
+                        <div style={{...styles.miniAvatar, color: isDanger ? COLORS.danger : COLORS.gold, backgroundColor: isDanger ? 'rgba(239, 68, 68, 0.1)' : COLORS.cell}}>
+                          {renderIcon(item.Type)}
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <h4 style={{...styles.miniCardTitle, color: isDanger ? COLORS.danger : COLORS.text}}>
+                             {item.DisplayName} {isDanger && <Ban size={12} style={{marginLeft: '6px'}} />}
+                          </h4>
+                          <p style={styles.miniCardSubtitle}>
+                             {item.SamAccountName} {item.EmployeeID ? `• Mat: ${item.EmployeeID}` : ''}
+                             {isDanger && <span style={{color: COLORS.danger, fontWeight: 'bold'}}> • ({item.LockedOut ? 'Bloqueado' : 'Desativado'})</span>}
+                          </p>
+                        </div>
+                        <div style={{ color: isDanger ? COLORS.danger : COLORS.gold }}><ArrowRight size={18} /></div>
                       </div>
-                      <div style={{ flex: 1 }}>
-                        <h4 style={{...styles.miniCardTitle, color: isDanger ? COLORS.danger : COLORS.text}}>
-                           {item.DisplayName} {isDanger && <Ban size={12} style={{marginLeft: '6px'}} />}
-                        </h4>
-                        <p style={styles.miniCardSubtitle}>
-                           {item.SamAccountName} {item.EmployeeID ? `• Mat: ${item.EmployeeID}` : ''}
-                           {isDanger && <span style={{color: COLORS.danger, fontWeight: 'bold'}}> • ({item.LockedOut ? 'Bloqueado' : 'Desativado'})</span>}
-                        </p>
-                      </div>
-                      <div style={{ color: isDanger ? COLORS.danger : COLORS.gold }}><ArrowRight size={18} /></div>
-                    </div>
-                  )})}
-                </div>
-              </div>
-            )}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -393,27 +608,30 @@ export default function Dashboard() {
                   </button>
                   {isUser && <span style={selectedUser.LockedOut ? styles.tagLocked : styles.tagUnlocked}>{selectedUser.LockedOut ? <><AlertTriangle size={14}/> Bloqueada</> : <><CheckCircle size={14}/> Sem Bloqueio</>}</span>}
                   <span style={styles.tagType}>{selectedUser.Type}</span>
+
+                  {/* BADGE DE SENHA EXPIRADA OU TROCA PENDENTE */}
+                  {isUser && selectedUser.pwdLastSet === 0 && (
+                    <span style={{ ...styles.tagLocked, borderColor: COLORS.warning, color: COLORS.warning }}>
+                      <AlertTriangle size={14} /> Troca Pendente no Logon
+                    </span>
+                  )}
                 </div>
 
                 <div style={styles.innerTabs}>
                   <button style={innerTab === 'geral' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('geral')}>Geral</button>
                   {isUser && <button style={innerTab === 'seguranca' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('seguranca')}>Segurança</button>}
                   {isComputer && <button style={innerTab === 'seguranca' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('seguranca')}>Diagnósticos</button>}
-                  
-                  {/* Botão Dinâmico de Relacionamentos (Grupos vs Membros) */}
                   <button style={innerTab === 'grupos' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('grupos')}>
                     {isGroup ? `Membros (${selectedUser.Members?.length || 0})` : `Grupos (${selectedUser.MemberOf?.length || 0})`}
                   </button>
-                  
                   {isUser && selectedUser.EmployeeID && <button style={innerTab === 'vetorh' ? styles.innerTabActive : styles.innerTabInactive} onClick={() => setInnerTab('vetorh')}>Vetorh DB</button>}
                 </div>
 
                 <div style={styles.innerContent}>
                   
-                  {/* ======================= ABA GERAL ======================= */}
+                  {/* ABA GERAL */}
                   {innerTab === 'geral' && (
                     <>
-                      {/* VISTA: COMPUTADOR */}
                       {isComputer && (
                         <>
                           <p style={styles.sectionLabel}>Identificação de Rede</p>
@@ -428,7 +646,6 @@ export default function Dashboard() {
                         </>
                       )}
 
-                      {/* VISTA: USUÁRIO */}
                       {isUser && (
                         <>
                           <p style={styles.sectionLabel}>Organização Corporativa</p>
@@ -455,7 +672,6 @@ export default function Dashboard() {
                         </>
                       )}
 
-                      {/* VISTA: GRUPO */}
                       {isGroup && (
                         <>
                           <p style={styles.sectionLabel}>Especificações do Grupo</p>
@@ -469,7 +685,6 @@ export default function Dashboard() {
                         </>
                       )}
 
-                      {/* METADADOS COMUNS (RENDERIZADOS PARA TODOS) */}
                       <p style={{...styles.sectionLabel, marginTop: '20px'}}>Metadados de Diretório</p>
                       <div style={styles.detailGrid}>
                         <div style={styles.detailItemFull}><span style={styles.detailLabel}>Nome Canônico (DN)</span><span style={styles.detailValueMicro}>{selectedUser.DN}</span></div>
@@ -481,20 +696,67 @@ export default function Dashboard() {
                       </div>
                     </>
                   )}
-                  {/* ======================================================== */}
 
-                  {/* ================= ABA DE RELACIONAMENTOS ================= */}
+                  {/* ABA DE RELACIONAMENTOS */}
+                  {/* ABA DE RELACIONAMENTOS COM GESTÃO DINÂMICA (+/-) */}
                   {innerTab === 'grupos' && (
-                     <div style={styles.listContainer}>
-                       {isGroup ? (
-                         selectedUser.Members?.length === 0 ? <p style={styles.hintText}>Nenhum membro neste grupo.</p> : selectedUser.Members.map((m, i) => <div key={i} style={styles.listItem}><User size={14} style={{marginRight: '8px', color: COLORS.muted}}/> {m}</div>)
-                       ) : (
-                         selectedUser.MemberOf?.length === 0 ? <p style={styles.hintText}>Nenhum relacionamento encontrado.</p> : selectedUser.MemberOf.map((g, i) => <div key={i} style={styles.listItem}><Users size={14} style={{marginRight: '8px', color: COLORS.muted}}/> {g}</div>)
-                       )}
-                     </div>
+                    <div>
+                      {/* Formulário de Adicionar ao Grupo (Apenas para Usuários e Computadores) */}
+                      {!isGroup && (
+                        <div style={{ display: 'flex', gap: '8px', marginBottom: '15px' }}>
+                          <input
+                            type="text"
+                            placeholder="Digite o nome do grupo no AD..."
+                            value={newGroupName}
+                            onChange={(e) => setNewGroupName(e.target.value)}
+                            style={styles.inputReset}
+                          />
+                          <button
+                            type="button"
+                            onClick={handleAddGroup}
+                            disabled={groupLoading}
+                            style={{ ...styles.actionBtnSuccess, padding: '0 18px' }}
+                          >
+                            {groupLoading ? '...' : '+ Adicionar'}
+                          </button>
+                        </div>
+                      )}
+
+                      <div style={styles.listContainer}>
+                        {isGroup ? (
+                          selectedUser.Members?.length === 0 ? (
+                            <p style={styles.hintText}>Nenhum membro neste grupo.</p>
+                          ) : (
+                            selectedUser.Members.map((m, i) => (
+                              <div key={i} style={styles.listItem}>
+                                <User size={14} style={{ marginRight: '8px', color: COLORS.muted }} /> {m}
+                              </div>
+                            ))
+                          )
+                        ) : selectedUser.MemberOf?.length === 0 ? (
+                          <p style={styles.hintText}>Nenhum relacionamento encontrado.</p>
+                        ) : (
+                          selectedUser.MemberOf.map((g, i) => (
+                            <div key={i} style={{ ...styles.listItem, justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', alignItems: 'center' }}>
+                                <Users size={14} style={{ marginRight: '8px', color: COLORS.gold }} /> {g}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveGroup(g)}
+                                style={styles.removeGroupBtn}
+                                title="Remover usuário deste grupo"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
                   )}
 
-                  {/* ================= ABA DE SEGURANÇA / DIAGNÓSTICO ================= */}
+                  {/* ABA DE SEGURANÇA / DIAGNÓSTICO */}
                   {innerTab === 'seguranca' && (
                     <div style={styles.actionSection}>
                       
@@ -525,9 +787,67 @@ export default function Dashboard() {
                           {selectedUser.Enabled && (
                             <div style={styles.resetContainer}>
                               <p style={styles.sectionLabel}>Redefinir Credenciais</p>
-                              <div style={styles.resetRow}>
-                                <input type="text" placeholder="Senha provisória" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={styles.inputReset} />
-                                <button onClick={handleResetPassword} disabled={resetLoading} style={styles.actionBtnSuccess}>{resetLoading ? 'Aguarde' : 'Confirmar'}</button>
+                              
+                              <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+                                <input 
+                                  type="text" 
+                                  placeholder="Digite ou gere uma senha..." 
+                                  value={newPassword} 
+                                  onChange={(e) => setNewPassword(e.target.value)} 
+                                  style={styles.inputReset} 
+                                />
+                                <button 
+                                  type="button" 
+                                  onClick={gerarSenhaAleatoria} 
+                                  style={styles.generateBtn}
+                                >
+                                  Gerar
+                                </button>
+                              </div>
+
+                              <label style={styles.toggleRow}>
+                                <input
+                                  type="checkbox"
+                                  checked={unlockAccount}
+                                  onChange={(e) => setUnlockAccount(e.target.checked)}
+                                  style={styles.checkbox}
+                                />
+                                <div>
+                                  <div style={styles.toggleLabel}>Desbloquear conta simultaneamente</div>
+                                  <div style={styles.toggleSub}>Zera o LockoutTime no Active Directory</div>
+                                </div>
+                              </label>
+
+                              <label style={styles.toggleRow}>
+                                <input
+                                  type="checkbox"
+                                  checked={forceChange}
+                                  onChange={(e) => setForceChange(e.target.checked)}
+                                  style={styles.checkbox}
+                                />
+                                <div>
+                                  <div style={styles.toggleLabel}>Exigir alteração no próximo logon</div>
+                                  <div style={styles.toggleSub}>Desmarque se a senha não puder ser expirada na hora</div>
+                                </div>
+                              </label>
+
+                              {/* Botões de Ação: Aplicar + Copiar Resumo */}
+                              <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
+                                <button 
+                                  onClick={handleResetPassword} 
+                                  disabled={resetLoading} 
+                                  style={{ ...styles.actionBtnSuccess, flex: 2, padding: '12px' }}
+                                >
+                                  {resetLoading ? 'Aguarde...' : 'Aplicar Credenciais'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={copiarResumoCredenciais}
+                                  style={{ ...styles.generateBtn, flex: 1, backgroundColor: COLORS.frame, border: `1px solid ${COLORS.gold}`, color: COLORS.gold, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                                  title="Copiar texto formatado com usuário e senha"
+                                >
+                                  <Copy size={15} /> Copiar
+                                </button>
                               </div>
                             </div>
                           )}
@@ -536,7 +856,7 @@ export default function Dashboard() {
                     </div>
                   )}
 
-                  {/* ================= ABA VETORH ================= */}
+                  {/* ABA VETORH */}
                   {innerTab === 'vetorh' && (
                      <div style={styles.actionSection}>
                        {vetorhLoading ? <p style={styles.hintText}>Sincronizando com SQL Server...</p> : (
@@ -644,62 +964,57 @@ export default function Dashboard() {
             {printersList.length > 0 && (
               <>
                 <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', flexWrap: 'wrap' }}>
-  <button onClick={restartSpooler} style={{...styles.actionBtnWarning, flex: 1, display: 'flex', justifyContent: 'center', gap: '8px'}}>
-    <RefreshCw size={16}/> Spooler
-  </button>
-  <button onClick={() => runPrintDiagnostic('ping')} style={{...styles.diagBtn, flex: 1, display: 'flex', justifyContent: 'center', gap: '8px'}}>
-    <Activity size={16}/> Ping
-  </button>
-  <button onClick={() => runPrintDiagnostic('wmi')} style={{...styles.diagBtn, flex: 1, display: 'flex', justifyContent: 'center', gap: '8px'}}>
-    <BarChart size={16}/> WMI
-  </button>
-</div>
+                  <button onClick={restartSpooler} style={{...styles.actionBtnWarning, flex: 1, display: 'flex', justifyContent: 'center', gap: '8px'}}>
+                    <RefreshCw size={16}/> Spooler
+                  </button>
+                  <button onClick={() => runPrintDiagnostic('ping')} style={{...styles.diagBtn, flex: 1, display: 'flex', justifyContent: 'center', gap: '8px'}}>
+                    <Activity size={16}/> Ping
+                  </button>
+                  <button onClick={() => runPrintDiagnostic('wmi')} style={{...styles.diagBtn, flex: 1, display: 'flex', justifyContent: 'center', gap: '8px'}}>
+                    <BarChart size={16}/> WMI
+                  </button>
+                </div>
                 <div style={styles.listGrid}>
-  {printersList.map((prn, idx) => (
-    <div key={idx} style={{...styles.card, padding: '15px', cursor: 'default'}}>
-      
-      {/* Cabeçalho da Impressora */}
-      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '15px'}}>
-        <div>
-          <h4 style={{...styles.cardTitle, fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px'}}>
-            <Printer size={16}/> {prn.Name}
-          </h4>
-          <p style={styles.miniCardSubtitle}>{prn.DriverName}</p>
-        </div>
-        <span style={{backgroundColor: COLORS.cell, padding: '4px 8px', borderRadius: '4px', fontSize: '12px', color: COLORS.gold, border: `1px solid ${COLORS.border}`, fontWeight: 'bold'}}>
-          {prn.JobCount} docs
-        </span>
-      </div>
-      
-      {/* Detalhes Extraídos (Como no Desktop) */}
-      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px'}}>
-         <div style={styles.detailItem}>
-           <span style={styles.detailLabel}>Porta / IP</span>
-           <span style={styles.detailValue}>{prn.PortName || 'N/A'}</span>
-         </div>
-         <div style={styles.detailItem}>
-           <span style={styles.detailLabel}>Status Físico</span>
-           <span style={styles.detailValue}>{prn.PrinterStatus?.Value || prn.PrinterStatus || 'Normal'}</span>
-         </div>
-         <div style={styles.detailItemFull}>
-           <span style={styles.detailLabel}>Localização</span>
-           <span style={styles.detailValue}>{prn.Location || 'Não informada no AD'}</span>
-         </div>
-      </div>
+                  {printersList.map((prn, idx) => (
+                    <div key={idx} style={{...styles.card, padding: '15px', cursor: 'default'}}>
+                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '15px'}}>
+                        <div>
+                          <h4 style={{...styles.cardTitle, fontSize: '15px', display: 'flex', alignItems: 'center', gap: '8px'}}>
+                            <Printer size={16}/> {prn.Name}
+                          </h4>
+                          <p style={styles.miniCardSubtitle}>{prn.DriverName}</p>
+                        </div>
+                        <span style={{backgroundColor: COLORS.cell, padding: '4px 8px', borderRadius: '4px', fontSize: '12px', color: COLORS.gold, border: `1px solid ${COLORS.border}`, fontWeight: 'bold'}}>
+                          {prn.JobCount} docs
+                        </span>
+                      </div>
+                      
+                      <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px'}}>
+                         <div style={styles.detailItem}>
+                           <span style={styles.detailLabel}>Porta / IP</span>
+                           <span style={styles.detailValue}>{prn.PortName || 'N/A'}</span>
+                         </div>
+                         <div style={styles.detailItem}>
+                           <span style={styles.detailLabel}>Status Físico</span>
+                           <span style={styles.detailValue}>{prn.PrinterStatus?.Value || prn.PrinterStatus || 'Normal'}</span>
+                         </div>
+                         <div style={styles.detailItemFull}>
+                           <span style={styles.detailLabel}>Localização</span>
+                           <span style={styles.detailValue}>{prn.Location || 'Não informada no AD'}</span>
+                         </div>
+                      </div>
 
-      {/* Botões de Ação Individual */}
-      <div style={{display: 'flex', gap: '10px'}}>
-        <button onClick={() => pingPrinter(prn.Name, prn.PortName)} style={{...styles.gridBtn, flex: 1, borderColor: '#38BDF8', color: '#38BDF8'}}>
-          <Activity size={14}/> Ping
-        </button>
-        <button onClick={() => clearQueue(prn.Name)} style={{...styles.gridBtn, flex: 1, borderColor: COLORS.warning, color: COLORS.warning}}>
-          <Trash2 size={14}/> Limpar Fila
-        </button>
-      </div>
-
-    </div>
-  ))}
-</div>
+                      <div style={{display: 'flex', gap: '10px'}}>
+                        <button onClick={() => pingPrinter(prn.Name, prn.PortName)} style={{...styles.gridBtn, flex: 1, borderColor: '#38BDF8', color: '#38BDF8'}}>
+                          <Activity size={14}/> Ping
+                        </button>
+                        <button onClick={() => clearQueue(prn.Name)} style={{...styles.gridBtn, flex: 1, borderColor: COLORS.warning, color: COLORS.warning}}>
+                          <Trash2 size={14}/> Limpar Fila
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </>
             )}
           </div>
@@ -746,15 +1061,36 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* MODAL: CONFIRMAÇÃO GENÉRICA (Substitui window.confirm) */}
+      {/* MODAL DE CONFIRMAÇÃO COM TRAVA FAT-FINGER */}
       {confirmConfig.isOpen && (
         <div style={styles.modalOverlay}>
           <div style={styles.modalContent}>
             <h3 style={{color: COLORS.gold, margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '16px'}}><AlertTriangle size={18}/> {confirmConfig.title}</h3>
-            <p style={{color: COLORS.text, fontSize: '13px', marginBottom: '20px', lineHeight: '1.5'}}>{confirmConfig.message}</p>
+            <p style={{color: COLORS.text, fontSize: '13px', marginBottom: '15px', lineHeight: '1.5'}}>{confirmConfig.message}</p>
+            
+            {requireSecurityWord && (
+              <input
+                type="text"
+                placeholder='Digite CONFIRMAR em maiúsculas'
+                value={confirmInputText}
+                onChange={(e) => setConfirmInputText(e.target.value)}
+                style={{ ...styles.modalInput, borderColor: COLORS.danger, marginBottom: '15px', textTransform: 'uppercase' }}
+              />
+            )}
+
             <div style={styles.modalActions}>
               <button onClick={() => setConfirmConfig({...confirmConfig, isOpen: false})} style={styles.modalCancelBtn}>Cancelar</button>
-              <button onClick={handleConfirmAction} style={styles.modalSaveBtn}>Confirmar</button>
+              <button 
+                onClick={handleConfirmAction} 
+                disabled={requireSecurityWord && confirmInputText !== 'CONFIRMAR'}
+                style={{
+                  ...styles.modalSaveBtn,
+                  opacity: (requireSecurityWord && confirmInputText !== 'CONFIRMAR') ? 0.4 : 1,
+                  backgroundColor: requireSecurityWord ? COLORS.danger : COLORS.gold
+                }}
+              >
+                Prosseguir
+              </button>
             </div>
           </div>
         </div>
@@ -768,6 +1104,35 @@ export default function Dashboard() {
             <textarea readOnly value={terminalContent} style={{ width: '100%', height: '300px', backgroundColor: '#000', color: '#00FF00', fontFamily: 'monospace', fontSize: '12px', border: 'none', outline: 'none', resize: 'none' }} />
             <div style={styles.modalActions}>
               <button disabled={terminalLoading} onClick={() => setTerminalOpen(false)} style={{...styles.modalSaveBtn, display: 'flex', justifyContent: 'center', alignItems: 'center'}}>{terminalLoading ? 'Aguarde' : 'Encerrar Sessão'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: VISOR DE HISTÓRICO DE AUDITORIA (LOGS) */}
+      {modalAuditOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={{...styles.modalContent, maxWidth: '550px'}}>
+            <h3 style={{color: COLORS.gold, margin: '0 0 15px 0', display: 'flex', alignItems: 'center', gap: '8px'}}>
+              <FileText size={18}/> Auditoria de Plantão (Últimos 20)
+            </h3>
+            {auditLoading ? (
+              <div style={{color: COLORS.gold, padding: '20px', textAlign: 'center'}}>Carregando log de eventos...</div>
+            ) : (
+              <div style={{maxHeight: '300px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px'}}>
+                {auditLogs.length === 0 ? (
+                  <p style={styles.hintText}>Nenhum log registrado ainda.</p>
+                ) : (
+                  auditLogs.map((linha, idx) => (
+                    <div key={idx} style={{ backgroundColor: COLORS.cell, padding: '10px', borderRadius: '4px', border: `1px solid ${COLORS.border}`, fontSize: '11px', fontFamily: 'monospace', color: COLORS.text }}>
+                      {linha}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+            <div style={styles.modalActions}>
+              <button onClick={() => setModalAuditOpen(false)} style={styles.modalCancelBtn}>Fechar Histórico</button>
             </div>
           </div>
         </div>
@@ -855,6 +1220,61 @@ const styles = {
   dangerZone: { borderTop: `1px solid ${COLORS.border}`, paddingTop: '15px', display: 'flex', flexDirection: 'column', gap: '15px' }, actionBtnWarning: { backgroundColor: 'transparent', color: COLORS.warning, border: `1px solid ${COLORS.warning}`, padding: '12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' },
   resetContainer: { backgroundColor: COLORS.cell, padding: '15px', borderRadius: '6px', border: `1px solid ${COLORS.border}` }, sectionLabel: { color: COLORS.gold, fontSize: '11px', margin: '0 0 10px 0', textTransform: 'uppercase', fontWeight: 'bold', letterSpacing: '0.5px' }, resetRow: { display: 'flex', gap: '10px' },
   inputReset: { flex: 1, backgroundColor: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: '10px', borderRadius: '4px', outline: 'none', fontSize: '13px' }, actionBtnSuccess: { backgroundColor: COLORS.success, color: COLORS.bg, border: 'none', padding: '0 15px', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer', fontSize: '12px' },
+  
+  generateBtn: {
+    backgroundColor: COLORS.border,
+    color: COLORS.text,
+    border: 'none',
+    borderRadius: '4px',
+    padding: '0 12px',
+    fontWeight: 'bold',
+    fontSize: '12px',
+    cursor: 'pointer'
+  },
+  toggleRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '10px',
+    marginBottom: '12px',
+    cursor: 'pointer',
+    userSelect: 'none'
+  },
+  checkbox: {
+    width: '16px',
+    height: '16px',
+    accentColor: COLORS.gold,
+    marginTop: '2px',
+    cursor: 'pointer'
+  },
+  toggleLabel: {
+    color: COLORS.text,
+    fontSize: '12px',
+    fontWeight: '600'
+  },
+  toggleSub: {
+    color: COLORS.muted,
+    fontSize: '11px',
+    marginTop: '2px'
+  },
+  headerIconBtn: {
+    background: 'none',
+    border: 'none',
+    color: COLORS.gold,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    padding: '4px'
+  },
+  recentChip: {
+    backgroundColor: COLORS.cell,
+    color: COLORS.text,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: '12px',
+    padding: '4px 10px',
+    fontSize: '11px',
+    cursor: 'pointer',
+    fontWeight: '500'
+  },
   groupsBox: { backgroundColor: COLORS.cell, padding: '12px', borderRadius: '6px', border: `1px solid ${COLORS.border}` }, groupItem: { color: COLORS.muted, fontSize: '12px', marginBottom: '6px', borderBottom: `1px solid ${COLORS.border}`, paddingBottom: '6px' }, hintText: { color: COLORS.muted, fontSize: '12px' },
   
   textArea: { width: '100%', height: '120px', backgroundColor: COLORS.cell, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: '12px', borderRadius: '6px', boxSizing: 'border-box', marginTop: '10px', resize: 'vertical', outline: 'none', fontSize: '13px' },
@@ -868,6 +1288,55 @@ const styles = {
   modalContent: { backgroundColor: COLORS.frame, padding: '25px', borderRadius: '8px', width: '100%', maxWidth: '400px', border: `1px solid ${COLORS.border}` },
   modalInput: { width: '100%', backgroundColor: COLORS.cell, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: '10px', borderRadius: '4px', boxSizing: 'border-box', outline: 'none', fontSize: '13px' },
   modalSelect: { width: '100%', backgroundColor: COLORS.cell, border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: '10px', borderRadius: '4px', marginTop: '10px', outline: 'none', fontSize: '13px' },
-  modalActions: { display: 'flex', gap: '10px', marginTop: '25px' }, modalCancelBtn: { flex: 1, padding: '10px', backgroundColor: 'transparent', color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }, modalSaveBtn: { flex: 1, padding: '10px', backgroundColor: COLORS.gold, color: COLORS.bg, border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' }
+  modalActions: { display: 'flex', gap: '10px', marginTop: '25px' }, modalCancelBtn: { flex: 1, padding: '10px', backgroundColor: 'transparent', color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }, modalSaveBtn: { flex: 1, padding: '10px', backgroundColor: COLORS.gold, color: COLORS.bg, border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer', fontSize: '13px' },
+  
+  // ADICIONAR DENTRO DE 'const styles = { ... }'
+  summaryGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: '12px',
+    marginBottom: '20px'
+  },
+  summaryCard: {
+    backgroundColor: COLORS.frame,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: '8px',
+    padding: '15px',
+    display: 'flex',
+    flexDirection: 'column'
+  },
+  summaryLabel: {
+    color: COLORS.muted,
+    fontSize: '11px',
+    fontWeight: 'bold',
+    textTransform: 'uppercase'
+  },
+  summaryValueWarning: {
+    color: COLORS.warning,
+    fontSize: '28px',
+    fontWeight: 'bold',
+    margin: '10px 0 2px 0'
+  },
+  summaryValueGold: {
+    color: COLORS.gold,
+    fontSize: '28px',
+    fontWeight: 'bold',
+    margin: '10px 0 2px 0'
+  },
+  summarySub: {
+    color: COLORS.muted,
+    fontSize: '11px'
+  },
+  removeGroupBtn: {
+    background: 'none',
+    border: 'none',
+    color: COLORS.danger,
+    cursor: 'pointer',
+    padding: '4px',
+    display: 'flex',
+    alignItems: 'center'
+  }
+
 };
+
 const styleSheet = document.createElement("style"); styleSheet.innerText = `@keyframes spin { 100% { transform: rotate(360deg); } }`; document.head.appendChild(styleSheet);

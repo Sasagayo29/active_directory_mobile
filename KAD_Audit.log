@@ -15,3 +15,19 @@
 [2026-07-27 16:23:01] | Operador: a.riqborges | Acao: Diag_SPLUNK | Alvo: Orlando.Braga | Status: EXECUTADO
 [2026-07-28 11:37:15] | Operador: a.riqborges | Acao: ConsultarSeguranca | Alvo: PTU-LT-8QXHD33 | Status: LAPS/BitLocker extraídos
 [2026-07-28 11:37:40] | Operador: a.riqborges | Acao: Diag_PING | Alvo: PTU-LT-8QXHD33$ | Status: EXECUTADO
+[2026-07-28 15:07:04] | Operador: A.riqborges | Acao: Diag_PING | Alvo: 10.205.109.15 | Status: EXECUTADO
+[2026-07-28 15:08:44] | Operador: A.riqborges | Acao: ConsultarSeguranca | Alvo: PTU-DT-47774 | Status: LAPS/BitLocker extraídos
+[2026-07-28 15:13:16] | Operador: A.riqborges | Acao: Diag_PING | Alvo: PTU-DT-47774$ | Status: EXECUTADO
+[2026-07-28 15:16:43] | Operador: A.riqborges | Acao: Diag_PING | Alvo: PTU-DT-46768$ | Status: EXECUTADO
+[2026-07-28 15:17:24] | Operador: A.riqborges | Acao: ConsultarSeguranca | Alvo: PTU-DT-46768 | Status: LAPS/BitLocker extraídos
+[2026-07-28 15:17:49] | Operador: A.riqborges | Acao: Diag_WMI | Alvo: PTU-DT-46768$ | Status: EXECUTADO
+[2026-07-28 15:18:21] | Operador: A.riqborges | Acao: Diag_PING | Alvo: PTU-DT-46768$ | Status: EXECUTADO
+[2026-07-28 15:19:37] | Operador: a.riqborges | Acao: Diag_PING | Alvo: PTU-DT-46768$ | Status: EXECUTADO
+[2026-07-28 15:21:31] | Operador: A.riqborges | Acao: LimparFila | Alvo: PTU-PRN-RH-02-COR | Status: SUCESSO (Server: ptu-prn-01.kinrossgold.com)
+[2026-07-28 17:23:52] | Operador: a.dgomes | Acao: Diag_SPLUNK | Alvo: Daniel.Gomes | Status: EXECUTADO
+[2026-07-29 11:17:06] | Operador: a.dgomes | Acao: Desbloquear | Alvo: a.jpreis | Status: SUCESSO
+[2026-07-29 11:38:49] | Operador: a.riqborges | Acao: Desbloquear | Alvo: vitor.monteiro | Status: SUCESSO
+[2026-07-29 11:39:20] | Operador: a.riqborges | Acao: ResetSenha | Alvo: vitor.monteiro | Status: SUCESSO
+[2026-07-29 12:02:01] | Operador: a.riqborges | Acao: Desbloquear | Alvo: ISena | Status: SUCESSO
+[2026-07-29 12:02:27] | Operador: a.riqborges | Acao: Diag_SPLUNK | Alvo: ISena | Status: EXECUTADO
+[2026-07-29 15:23:41] | Operador: a.riqborges | Acao: Desbloquear | Alvo: a.RiqBorges | Status: SUCESSO

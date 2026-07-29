@@ -10,8 +10,10 @@ import json
 import pyodbc
 import socket
 import re
+import ssl # <-- Adicione este import
 import ldap3 
-from ldap3 import Server, Connection, ALL, SUBTREE
+from ldap3 import Server, Connection, ALL, SUBTREE, Tls, RESTARTABLE # <-- Atualize esta linha
+from pydantic import BaseModel
 
 app = FastAPI(title="KAD Mobile API - Módulo Avançado AD com Auditoria")
 
@@ -107,19 +109,27 @@ def get_ldap_connection(creds: dict):
     # --- MOTOR DE AUTO-DISCOVERY DO ACTIVE DIRECTORY ---
     if not server_ip or server_ip.upper() == 'AUTO':
         try:
-            # O Python resolve o domínio e pega o IP do DC ativo igualzinho ao comando Ping!
             server_ip = socket.gethostbyname(domain)
         except socket.gaierror:
             raise HTTPException(status_code=400, detail=f"Falha de DNS: Não foi possível localizar um servidor para {domain}")
     # ----------------------------------------------------
     
-    server = Server(server_ip, get_info=ALL)
     full_username = f"{creds['username']}@{domain}"
+    
     try:
-        conn = Connection(server, user=full_username, password=creds['password'], auto_bind=True)
+        # Tentativa 1: Conexão Segura LDAPS (Porta 636)
+        tls_conf = Tls(validate=ssl.CERT_NONE, version=ssl.PROTOCOL_TLSv1_2)
+        server = Server(server_ip, port=636, use_ssl=True, get_info=ALL, tls=tls_conf)
+        conn = Connection(server, user=full_username, password=creds['password'], authentication='SIMPLE', auto_bind=True, client_strategy=RESTARTABLE, receive_timeout=15)
         return conn
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Erro de autenticação no Servidor {server_ip}: {str(e)}")
+    except Exception as e_ssl:
+        try:
+            # Tentativa 2: Rota de Fuga LDAP Padrão (Porta 389)
+            server = Server(server_ip, port=389, get_info=ALL)
+            conn = Connection(server, user=full_username, password=creds['password'], authentication='SIMPLE', auto_bind=True, client_strategy=RESTARTABLE, receive_timeout=15)
+            return conn
+        except Exception as e_plain:
+            raise HTTPException(status_code=401, detail=f"Erro de autenticação no Servidor {server_ip}: {str(e_plain)}")
 
 # --- MOTOR DE POWERSHELL DINÂMICO ---
 def run_powershell(command: str, creds: dict, return_json: bool = True):
@@ -377,25 +387,36 @@ def reset_password(username: str, payload: PasswordReset, creds: dict = Depends(
     try:
         conn.search(creds['search_base'], f"(sAMAccountName={username})")
         if not conn.entries:
-            raise HTTPException(status_code=404, detail="Objeto não encontrado.")
+            raise HTTPException(status_code=404, detail="Objeto não encontrado no AD.")
             
         entry = conn.entries[0]
         changes = {}
         
+        # 1. Converte e aplica a nova senha em UTF-16-LE (padrão obrigatório da Microsoft)
         pwd_encoded = f'"{payload.new_password}"'.encode('utf-16-le')
         changes['unicodePwd'] = [(ldap3.MODIFY_REPLACE, [pwd_encoded])]
         
+        # 2. Desbloqueia a conta junto se a opção estiver marcada
         if payload.unlock_account:
             changes['lockoutTime'] = [(ldap3.MODIFY_REPLACE, [0])]
+            
+        # 3. Exigir troca no próximo logon:
+        # pwdLastSet = 0  -> Exige alteração no próximo logon
+        # pwdLastSet = -1 -> Considera a senha atualizada agora (NÃO exige alteração)
         if payload.force_change:
             changes['pwdLastSet'] = [(ldap3.MODIFY_REPLACE, [0])]
+        else:
+            changes['pwdLastSet'] = [(ldap3.MODIFY_REPLACE, [-1])]
             
         success = conn.modify(entry.entry_dn, changes)
         if not success:
-            raise HTTPException(status_code=400, detail=f"Falha na troca de senha (Política de segurança ou SSL): {conn.result['description']}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Falha pelo AD (Política de complexidade ou histórico): {conn.result['description']}"
+            )
             
-        AuditLogger.log(creds["username"], "ResetSenha", username, "SUCESSO")
-        return {"message": f"Senha de {username} redefinida."}
+        AuditLogger.log(creds["username"], "ResetSenha", username, f"Desbloqueio: {payload.unlock_account} | ForceChange: {payload.force_change}")
+        return {"message": f"Credenciais de {username} atualizadas com sucesso."}
     finally:
         conn.unbind()
 
@@ -788,5 +809,100 @@ def get_computer_security(hostname: str, creds: dict = Depends(get_current_crede
         bitlocker_keys.sort(key=lambda x: x['date'], reverse=True)
         AuditLogger.log(creds["username"], "ConsultarSeguranca", network_target, "LAPS/BitLocker extraídos")
         return {"laps": laps_pwd, "bitlocker": bitlocker_keys}
+    finally:
+        conn.unbind()
+
+# ==========================================================
+# 1. VISOR DE AUDITORIA (CORRIGE O ERRO 404)
+# ==========================================================
+@app.get("/audit/latest")
+def get_latest_audit_logs(limit: int = 25, creds: dict = Depends(get_current_credentials)):
+    log_file = "KAD_Audit.log"
+    if not os.path.exists(log_file):
+        return {"data": ["Nenhum registro de auditoria encontrado até o momento."]}
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+            lines = [line.strip() for line in f.readlines() if line.strip()]
+        return {"data": lines[-limit:][::-1]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================================
+# 2. CARDS DE RESUMO DA TELA INICIAL (OPÇÃO 4)
+# ==========================================================
+@app.get("/dashboard/summary")
+def get_dashboard_summary(creds: dict = Depends(get_current_credentials)):
+    conn = get_ldap_connection(creds)
+    try:
+        # Busca quantidade de contas atualmente bloqueadas no AD
+        conn.search(creds['search_base'], '(&(objectClass=user)(lockoutTime>=1))', attributes=['sAMAccountName'])
+        locked_count = len(conn.entries)
+        
+        # Busca quantidade de contas com troca obrigatória pendente (pwdLastSet=0)
+        conn.search(creds['search_base'], '(&(objectClass=user)(pwdLastSet=0))', attributes=['sAMAccountName'])
+        pending_pwd_count = len(conn.entries)
+        
+        return {
+            "locked_users": locked_count,
+            "pending_passwords": pending_pwd_count,
+            "status": "Online"
+        }
+    except Exception as e:
+        return {"locked_users": 0, "pending_passwords": 0, "status": "Offline"}
+    finally:
+        conn.unbind()
+
+# ==========================================================
+# 3. GESTÃO DE GRUPOS - ADICIONAR E REMOVER (OPÇÃO 2)
+# ==========================================================
+class GroupActionPayload(BaseModel):
+    group_name: str
+
+@app.post("/users/{username}/groups/add")
+def add_user_to_group(username: str, payload: GroupActionPayload, creds: dict = Depends(get_current_credentials)):
+    conn = get_ldap_connection(creds)
+    try:
+        # Busca DN do Usuário
+        conn.search(creds['search_base'], f"(sAMAccountName={username})")
+        if not conn.entries:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+        user_dn = conn.entries[0].entry_dn
+        
+        # Busca DN do Grupo
+        conn.search(creds['search_base'], f"(&(objectClass=group)(sAMAccountName={payload.group_name}))")
+        if not conn.entries:
+            raise HTTPException(status_code=404, detail="Grupo não encontrado no AD.")
+        group_dn = conn.entries[0].entry_dn
+        
+        # Adiciona membro no AD via LDAP MODIFY_ADD
+        success = conn.modify(group_dn, {'member': [(ldap3.MODIFY_ADD, [user_dn])]})
+        if not success:
+            raise HTTPException(status_code=400, detail=f"Erro no AD: {conn.result['description']}")
+            
+        AuditLogger.log(creds["username"], "AddGroup", username, f"Grupo: {payload.group_name}")
+        return {"message": f"Usuário adicionado ao grupo {payload.group_name} com sucesso."}
+    finally:
+        conn.unbind()
+
+@app.post("/users/{username}/groups/remove")
+def remove_user_from_group(username: str, payload: GroupActionPayload, creds: dict = Depends(get_current_credentials)):
+    conn = get_ldap_connection(creds)
+    try:
+        conn.search(creds['search_base'], f"(sAMAccountName={username})")
+        if not conn.entries:
+            raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+        user_dn = conn.entries[0].entry_dn
+        
+        conn.search(creds['search_base'], f"(&(objectClass=group)(sAMAccountName={payload.group_name}))")
+        if not conn.entries:
+            raise HTTPException(status_code=404, detail="Grupo não encontrado no AD.")
+        group_dn = conn.entries[0].entry_dn
+        
+        success = conn.modify(group_dn, {'member': [(ldap3.MODIFY_DELETE, [user_dn])]})
+        if not success:
+            raise HTTPException(status_code=400, detail=f"Erro no AD: {conn.result['description']}")
+            
+        AuditLogger.log(creds["username"], "RemoveGroup", username, f"Grupo: {payload.group_name}")
+        return {"message": f"Usuário removido do grupo {payload.group_name} com sucesso."}
     finally:
         conn.unbind()

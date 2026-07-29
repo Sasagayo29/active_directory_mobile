@@ -1,37 +1,61 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import basicSsl from '@vitejs/plugin-basic-ssl'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
   plugins: [
     react(),
+    basicSsl(),
     VitePWA({
       registerType: 'autoUpdate',
+      injectRegister: 'auto',
+      devOptions: {
+        enabled: false // <-- Desativa o SW no modo teste para o SSL falso não bloquear o app
+      },
       includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
       manifest: {
-        name: 'KAD Mobile - Kinross Active Directory',
+        name: 'KAD Mobile - Active Directory Console',
         short_name: 'KAD Mobile',
-        description: 'Gestão de Identidades e Acessos Kinross',
-        theme_color: '#1e1e1e',
-        background_color: '#121212',
-        display: 'standalone', // Faz abrir em tela cheia, como um app nativo
+        description: 'Console Corporativo de Gestão Active Directory',
+        theme_color: '#0B111E',
+        background_color: '#0B111E',
+        display: 'standalone', // A CHAVE DE OURO: Remove a barra de endereços do navegador
+        orientation: 'portrait',
+        start_url: '/',
         icons: [
           {
-            src: 'icon-192x192.png',
+            src: '/pwa-192x192.png',
             sizes: '192x192',
             type: 'image/png'
           },
           {
-            src: 'icon-512x512.png',
+            src: '/pwa-512x512.png',
             sizes: '512x512',
             type: 'image/png'
+          },
+          {
+            src: '/pwa-512x512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'any maskable' // Garante que o ícone se adapte ao formato do Android (redondo/quadrado)
           }
         ]
       }
     })
   ],
   server: {
-    host: true, // Permite acesso pela rede local
-    port: 5173
+    host: '0.0.0.0',
+    port: 444,
+    strictPort: true,
+    https: true,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/api/, '')
+      }
+    }
   }
 })
