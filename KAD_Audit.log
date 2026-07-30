@@ -31,3 +31,15 @@
 [2026-07-29 12:02:01] | Operador: a.riqborges | Acao: Desbloquear | Alvo: ISena | Status: SUCESSO
 [2026-07-29 12:02:27] | Operador: a.riqborges | Acao: Diag_SPLUNK | Alvo: ISena | Status: EXECUTADO
 [2026-07-29 15:23:41] | Operador: a.riqborges | Acao: Desbloquear | Alvo: a.RiqBorges | Status: SUCESSO
+[2026-07-30 07:59:40] | Operador: a.riqborges | Acao: ResetSenha | Alvo: FabioHenrique.Costa | Status: Desbloqueio: True | ForceChange: True
+[2026-07-30 08:01:53] | Operador: a.riqborges | Acao: ResetSenha | Alvo: Diego.Almeida | Status: Desbloqueio: True | ForceChange: True
+[2026-07-30 08:11:45] | Operador: a.riqborges | Acao: ResetSenha | Alvo: ISena | Status: Desbloqueio: True | ForceChange: True
+[2026-07-30 09:34:55] | Operador: a.riqborges | Acao: ResetSenha | Alvo: Leandro.Xavier | Status: Desbloqueio: True | ForceChange: True
+[2026-07-30 09:36:07] | Operador: a.riqborges | Acao: UpdateVetorh | Alvo: 26868 | Status: SUCESSO: NTU
+[2026-07-30 09:36:11] | Operador: a.riqborges | Acao: UpdateVetorh | Alvo: 26868 | Status: SUCESSO: LTU
+[2026-07-30 09:39:49] | Operador: a.riqborges | Acao: ResetSenha | Alvo: GHachmann | Status: Desbloqueio: True | ForceChange: True
+[2026-07-30 09:40:17] | Operador: a.riqborges | Acao: ResetSenha | Alvo: GHachmann | Status: Desbloqueio: True | ForceChange: False
+[2026-07-30 10:24:04] | Operador: a.riqborges | Acao: ConsultarGruposLocais | Alvo: PTU-DT-46768.kinrossgold.com | Status: SUCESSO
+[2026-07-30 10:24:27] | Operador: a.riqborges | Acao: NotificarUsuario | Alvo: ptu-dt-46768.kinrossgold.com | Status: Mensagem: Favor salvar seus trabalhos em...
+[2026-07-30 11:27:43] | Operador: a.gasantiago | Acao: UpdateVetorh | Alvo: 16635 | Status: SUCESSO: LTU
+[2026-07-30 11:27:54] | Operador: a.gasantiago | Acao: UpdateVetorh | Alvo: 7798 | Status: SUCESSO: LTU

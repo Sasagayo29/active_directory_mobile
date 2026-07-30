@@ -66,6 +66,9 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
+class NotifyPayload(BaseModel):
+    message: str
+
 # --- JWT & AUTENTICAÇÃO DINÂMICA ---
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -906,3 +909,32 @@ def remove_user_from_group(username: str, payload: GroupActionPayload, creds: di
         return {"message": f"Usuário removido do grupo {payload.group_name} com sucesso."}
     finally:
         conn.unbind()
+
+# ==========================================================
+# MÓDULO 11: NOTIFICAR USUÁRIO ATIVO NO DESKTOP (WINRM)
+# ==========================================================
+class NotifyPayload(BaseModel):
+    message: str
+
+@app.post("/computers/{hostname}/notify")
+def notify_active_user(hostname: str, payload: NotifyPayload, creds: dict = Depends(get_current_credentials)):
+    if not payload.message or not payload.message.strip():
+        raise HTTPException(status_code=400, detail="A mensagem não pode estar vazia.")
+        
+    network_target = hostname.rstrip('$').lower()
+    if "." not in network_target:
+        network_target = f"{network_target}.{creds['domain']}"
+        
+    # Sanitiza aspas para não quebrar o comando PowerShell
+    msg_clean = payload.message.replace('"', "'").strip()
+    
+    # Executa o comando nativo do Windows 'msg *' na sessão remota via WinRM
+    script_block = f"msg * \"[KAD Mobile - Suporte TI] {msg_clean}\""
+    script = (
+        f"$so = New-PSSessionOption -OpenTimeout 10000 -OperationTimeout 20000; "
+        f"Invoke-Command -ComputerName '{network_target}' -SessionOption $so -ScriptBlock {{ {script_block} }} -Credential $mycreds"
+    )
+    
+    run_powershell(script, creds, return_json=False)
+    AuditLogger.log(creds["username"], "NotificarUsuario", network_target, f"Mensagem: {msg_clean[:30]}...")
+    return {"message": f"Alerta enviado com sucesso para a tela de {hostname.rstrip('$')}!"}

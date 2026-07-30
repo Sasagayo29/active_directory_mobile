@@ -6,7 +6,7 @@ import {
   User, Monitor, Users, Search, Layers, Scale, Database, Printer, 
   CheckCircle, Ban, Unlock, Activity, BarChart, ArrowRight, ArrowLeft, 
   Tag, LogOut, Settings, Server, Trash2, RefreshCw, AlertTriangle,
-  FileText, Copy, Clock
+  FileText, Copy, Clock, X, Bell
 } from 'lucide-react';
 
 export default function Dashboard() {
@@ -85,6 +85,13 @@ export default function Dashboard() {
     return saved ? JSON.parse(saved) : [];
   });
 
+  // Função para zerar o histórico local
+  const clearRecentSearches = () => {
+    localStorage.removeItem('@kad_recent_searches');
+    setRecentSearches([]);
+    toast.success('Histórico de buscas limpo!');
+  };
+
   const saveRecentSearch = (term) => {
     if (!term) return;
     const cleanTerm = term.trim().toUpperCase();
@@ -111,6 +118,103 @@ export default function Dashboard() {
     } finally {
       setAuditLoading(false);
     }
+  };
+
+  // --- ESTADOS: NOTIFICAR USUÁRIO ATIVO DO DESKTOP ---
+  const [modalNotifyOpen, setModalNotifyOpen] = useState(false);
+  const [notifyMessage, setNotifyMessage] = useState('');
+  const [notifyLoading, setNotifyLoading] = useState(false);
+
+  const handleSendNotification = async () => {
+    if (!notifyMessage.trim()) {
+      return toast.error('Digite a mensagem antes de disparar o alerta.');
+    }
+    setNotifyLoading(true);
+    try {
+      const res = await api.post(`/computers/${selectedUser.SamAccountName}/notify`, {
+        message: notifyMessage.trim()
+      });
+      toast.success(res.data.message);
+      setNotifyMessage('');
+      setModalNotifyOpen(false);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Erro ao enviar notificação. Máquina inacessível.');
+    } finally {
+      setNotifyLoading(false);
+    }
+  };
+
+  // --- MONITOR DE ATIVAÇÃO DE USUÁRIOS (WATCHDOG AD) ---
+  const [monitoredUsers, setMonitoredUsers] = useState(() => {
+    const saved = localStorage.getItem('@kad_monitored_users');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  // Salva no localStorage sempre que a lista de monitorados mudar
+  React.useEffect(() => {
+    localStorage.setItem('@kad_monitored_users', JSON.stringify(monitoredUsers));
+  }, [monitoredUsers]);
+
+  // Checa o status dos usuários monitorados a cada 30 segundos em segundo plano
+  React.useEffect(() => {
+    if (monitoredUsers.length === 0) return;
+
+    const interval = setInterval(async () => {
+      for (const username of monitoredUsers) {
+        try {
+          const res = await api.get(`/users/${username}`);
+          const u = res.data.data?.[0];
+          
+          // Se a conta virou Ativa (Enabled === true)
+          if (u && u.Enabled) {
+            // 1. Dispara Notificação Nativa do Celular / Windows
+            if ("Notification" in window && Notification.permission === "granted") {
+              new Notification("✅ Usuário Habilitado no AD!", {
+                body: `A conta de ${u.DisplayName} (${u.SamAccountName}) está ativa agora.`,
+                icon: "/pwa-192x192.png"
+              });
+            }
+            
+            // 2. Alerta sonoro/visual dentro do app
+            toast.success(`🎉 O usuário ${u.SamAccountName} foi habilitado no AD!`, {
+              duration: 8000,
+              icon: '✅'
+            });
+
+            // 3. Remove da lista de monitoramento
+            setMonitoredUsers(prev => prev.filter(item => item !== username));
+            
+            // Se for o usuário que está aberto na tela, recarrega os dados
+            if (selectedUser?.SamAccountName === username) {
+              selectUserForDetail(u);
+            }
+          }
+        } catch (err) {
+          console.error(`Falha ao checar status de ${username}`);
+        }
+      }
+    }, 30000); // 30000 ms = checa a cada 30 segundos
+
+    return () => clearInterval(interval);
+  }, [monitoredUsers, selectedUser]);
+
+  // Função para ativar/desativar o monitoramento de uma conta
+  const toggleMonitorUser = async (username) => {
+    // Pede permissão para mandar notificação no celular (se ainda não tiver)
+    if ("Notification" in window && Notification.permission === "default") {
+      await Notification.requestPermission();
+    }
+
+    setMonitoredUsers(prev => {
+      const exists = prev.includes(username);
+      if (exists) {
+        toast.error(`Monitoramento cancelado para ${username}.`);
+        return prev.filter(i => i !== username);
+      } else {
+        toast.success(`⏳ Monitorando ${username}! Você será notificado quando for habilitado.`);
+        return [...prev, username];
+      }
+    });
   };
 
   // --- MELHORIA 1: COPIAR RESUMO DO CHAMADO PARA TEAMS/WHATSAPP ---
@@ -371,6 +475,66 @@ export default function Dashboard() {
     );
   };
 
+  // --- ESTADOS: VETORH DIRETO (DESKTOP MODE) ---
+  const [vetorhDirectInput, setVetorhDirectInput] = useState('');
+  const [vetorhDirectTipcol, setVetorhDirectTipcol] = useState(1);
+  const [vetorhDirectTechacc, setVetorhDirectTechacc] = useState('NTU');
+  const [vetorhDirectLoading, setVetorhDirectLoading] = useState(false);
+  const [vetorhDirectResult, setVetorhDirectResult] = useState(null);
+
+  // Consulta individual de teste por Matrícula
+  const [vetorhSearchMat, setVetorhSearchMat] = useState('');
+  const [vetorhSearchResult, setVetorhSearchResult] = useState(null);
+  const [vetorhSearchLoading, setVetorhSearchLoading] = useState(false);
+
+  const handleVetorhDirectSearch = async (e) => {
+    if (e) e.preventDefault();
+    if (!vetorhSearchMat.trim()) return;
+    setVetorhSearchLoading(true);
+    setVetorhSearchResult(null);
+    try {
+      const res = await api.get(`/vetorh/${vetorhSearchMat.trim()}`);
+      setVetorhSearchResult(res.data);
+    } catch (err) {
+      toast.error('Falha ao consultar matrícula no SQL Server.');
+    } finally {
+      setVetorhSearchLoading(false);
+    }
+  };
+
+  const handleVetorhDirectUpdate = async () => {
+    const matriculasArray = vetorhDirectInput
+      .split(/[,;\n]/)
+      .map(m => m.trim())
+      .filter(m => m !== '' && !isNaN(m));
+
+    if (matriculasArray.length === 0) {
+      return toast.error('Insira pelo menos uma matrícula numérica válida.');
+    }
+
+    showConfirm(
+      'Procedure Vetorh (SQL Server)',
+      `Deseja aplicar o acesso "${vetorhDirectTechacc}" (Tipo ${vetorhDirectTipcol}) para ${matriculasArray.length} matrícula(s)?`,
+      async () => {
+        setVetorhDirectLoading(true);
+        setVetorhDirectResult(null);
+        try {
+          const res = await api.post('/vetorh/update', {
+            matriculas: matriculasArray,
+            tipcol: Number(vetorhDirectTipcol),
+            techacc: vetorhDirectTechacc
+          });
+          setVetorhDirectResult(res.data);
+          toast.success('Procedure executada no banco com sucesso!');
+        } catch (err) {
+          toast.error(err.response?.data?.detail || 'Erro ao executar procedure.');
+        } finally {
+          setVetorhDirectLoading(false);
+        }
+      }
+    );
+  };
+
   // ==================== AÇÕES BÁSICAS AD ====================
   const handleUnlock = async () => { 
     try { await api.post(`/users/${selectedUser.SamAccountName}/unlock`); toast.success('Conta desbloqueada com sucesso.'); handleSearch(); } 
@@ -491,6 +655,9 @@ export default function Dashboard() {
           <button style={activeTab === 'bulk' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('bulk')}><Layers size={16} /> Lote</button>
           <button style={activeTab === 'compare' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('compare')}><Scale size={16} /> Comparador</button>
           <button style={activeTab === 'printers' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('printers')}><Printer size={16} /> Print</button>
+          
+          {/* NOVA ABA: VETORH DIRETO */}
+          <button style={activeTab === 'vetorh_direct' ? styles.tabActive : styles.tabInactive} onClick={() => setActiveTab('vetorh_direct')}><Database size={16} /> Vetorh</button>
         </div>
         
       </div>
@@ -515,6 +682,7 @@ export default function Dashboard() {
                 <span style={{ color: COLORS.muted, fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <Clock size={12} /> Recentes:
                 </span>
+                
                 {recentSearches.map((term, idx) => (
                   <button
                     key={idx}
@@ -528,6 +696,16 @@ export default function Dashboard() {
                     {term}
                   </button>
                 ))}
+
+                {/* BOTÃO COM ÍCONE DE LIXEIRA PARA LIMPAR HISTÓRICO */}
+                <button
+                  type="button"
+                  onClick={clearRecentSearches}
+                  style={styles.clearRecentBtn}
+                  title="Limpar histórico de buscas recentes"
+                >
+                  <Trash2 size={13} />
+                </button>
               </div>
             )}
 
@@ -614,6 +792,25 @@ export default function Dashboard() {
                     <span style={{ ...styles.tagLocked, borderColor: COLORS.warning, color: COLORS.warning }}>
                       <AlertTriangle size={14} /> Troca Pendente no Logon
                     </span>
+                  )}
+
+                  {/* NOVO: BOTÃO DE MONITORAR QUANDO O USUÁRIO FOR HABILITADO */}
+                  {isUser && !selectedUser.Enabled && (
+                    <button
+                      type="button"
+                      onClick={() => toggleMonitorUser(selectedUser.SamAccountName)}
+                      style={{
+                        ...styles.tagLocked,
+                        borderColor: monitoredUsers.includes(selectedUser.SamAccountName) ? COLORS.success : COLORS.gold,
+                        color: monitoredUsers.includes(selectedUser.SamAccountName) ? COLORS.success : COLORS.gold,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <Bell size={14} />
+                      {monitoredUsers.includes(selectedUser.SamAccountName)
+                        ? "Monitorando Ativação..."
+                        : "Avisar quando Habilitar"}
+                    </button>
                   )}
                 </div>
 
@@ -765,6 +962,19 @@ export default function Dashboard() {
                         {(isUser || isComputer) && <button onClick={openMoveModal} style={styles.gridBtn}><Server size={14} /> Mover OU</button>}
                         {isComputer && <button onClick={fetchLocalGroups} disabled={loadingGroups} style={styles.gridBtn}>{loadingGroups ? 'Processando...' : <><Users size={14}/> Grupos Locais</>}</button>}
                         {isComputer && <button onClick={fetchSecurityKeys} style={{...styles.gridBtn, borderColor: COLORS.success, color: COLORS.success, fontWeight: 'bold'}}><Unlock size={14}/> LAPS & BitLocker</button>}
+                        
+                        {/* NOVO BOTÃO: NOTIFICAR USUÁRIO ATIVO */}
+                        {isComputer && (
+                          <button 
+                            onClick={() => {
+                              setNotifyMessage('Favor salvar seus trabalhos em aberto. Sua máquina passará por uma rápida manutenção do Suporte TI em 5 minutos.');
+                              setModalNotifyOpen(true);
+                            }} 
+                            style={{ ...styles.gridBtn, borderColor: COLORS.gold, color: COLORS.gold, fontWeight: 'bold' }}
+                          >
+                            <Bell size={14} /> Notificar Usuário
+                          </button>
+                        )}
                       </div>
 
                       <p style={styles.sectionLabel}>Telemetria e Diagnósticos</p>
@@ -1019,6 +1229,127 @@ export default function Dashboard() {
             )}
           </div>
         )}
+        {/* ================= ABA 5: VETORH DIRETO (SQL SERVER) ================= */}
+        {activeTab === 'vetorh_direct' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            
+            {/* CARD 1: CONSULTA RÁPIDA POR MATRÍCULA */}
+            <div style={styles.card}>
+              <h3 style={styles.cardTitle}>Consulta SQL (Vetorh)</h3>
+              <p style={styles.hintText}>Verifique o nível técnico atual na tabela r034cpl.</p>
+              
+              <form onSubmit={handleVetorhDirectSearch} style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                <input
+                  type="text"
+                  placeholder="Número da Matrícula (Ex: 10452)..."
+                  value={vetorhSearchMat}
+                  onChange={(e) => setVetorhSearchMat(e.target.value)}
+                  style={styles.inputReset}
+                />
+                <button type="submit" disabled={vetorhSearchLoading} style={{ ...styles.actionBtnSuccess, padding: '0 20px' }}>
+                  {vetorhSearchLoading ? '...' : <Search size={16} />}
+                </button>
+              </form>
+
+              {vetorhSearchResult && (
+                <div style={{ ...styles.resetContainer, marginTop: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={styles.detailLabel}>Nível Técnico</span>
+                    <strong style={{ color: COLORS.gold, fontSize: '18px' }}>{vetorhSearchResult.techacc}</strong>
+                  </div>
+                  <div>
+                    <span style={styles.detailLabel}>Tipo Colaborador</span>
+                    <strong style={{ color: COLORS.text, fontSize: '14px' }}>
+                      {vetorhSearchResult.tipcol === 1 ? '1 - Próprio' : '2 - Terceiro'}
+                    </strong>
+                  </div>
+                  {vetorhSearchResult.message && (
+                    <span style={{ color: COLORS.warning, fontSize: '12px' }}>{vetorhSearchResult.message}</span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* CARD 2: EXECUÇÃO DA PROCEDURE (SIMPLES OU EM LOTE) */}
+            <div style={styles.card}>
+              <h3 style={styles.cardTitle}>Executar SP_IntTITechAcc</h3>
+              <p style={styles.hintText}>Insira uma ou várias matrículas (separadas por vírgula ou quebra de linha).</p>
+              
+              <textarea
+                value={vetorhDirectInput}
+                onChange={(e) => setVetorhDirectInput(e.target.value)}
+                placeholder="Matrículas (Ex: 10452, 10453, 10454)..."
+                style={styles.textArea}
+              />
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '15px' }}>
+                <div>
+                  <span style={styles.detailLabel}>Tipo de Colaborador</span>
+                  <select
+                    value={vetorhDirectTipcol}
+                    onChange={(e) => setVetorhDirectTipcol(Number(e.target.value))}
+                    style={styles.modalSelect}
+                  >
+                    <option value={1}>1 - Próprio</option>
+                    <option value={2}>2 - Terceiro</option>
+                  </select>
+                </div>
+                <div>
+                  <span style={styles.detailLabel}>Nível de Acesso</span>
+                  <select
+                    value={vetorhDirectTechacc}
+                    onChange={(e) => setVetorhDirectTechacc(e.target.value)}
+                    style={styles.modalSelect}
+                  >
+                    <option value="NTU">NTU (Básico)</option>
+                    <option value="LTU">LTU (Leitura)</option>
+                    <option value="ETU">ETU (Edição)</option>
+                  </select>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleVetorhDirectUpdate}
+                disabled={vetorhDirectLoading}
+                style={{
+                  ...styles.actionBtnSuccess,
+                  width: '100%',
+                  padding: '14px',
+                  marginTop: '20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  fontSize: '14px'
+                }}
+              >
+                <Database size={18} />
+                {vetorhDirectLoading ? 'Executando Procedure no Banco...' : 'Aplicar Procedure SQL'}
+              </button>
+
+              {/* BOX DE RETORNO DO SQL SERVER */}
+              {vetorhDirectResult && (
+                <div style={styles.bulkResultBox}>
+                  <p style={{ color: COLORS.success, fontWeight: 'bold', margin: '0 0 10px 0' }}>
+                    Sucesso: {vetorhDirectResult.success_count} registro(s) atualizado(s)
+                  </p>
+                  {vetorhDirectResult.errors?.length > 0 && (
+                    <div>
+                      <p style={{ color: COLORS.danger, fontSize: '13px', margin: '0 0 5px 0' }}>Erros SQL:</p>
+                      <ul style={{ color: COLORS.danger, fontSize: '12px', paddingLeft: '20px', margin: 0 }}>
+                        {vetorhDirectResult.errors.map((err, idx) => (
+                          <li key={idx}><strong>Matrícula {err.matricula}:</strong> {err.error}[cite: 5]</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+          </div>
+        )}
       </div>
 
       {/* MODAL: VISOR LAPS E BITLOCKER */}
@@ -1172,6 +1503,44 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* MODAL: NOTIFICAR USUÁRIO ATIVO NO DESKTOP */}
+      {modalNotifyOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={styles.modalContent}>
+            <h3 style={{ color: COLORS.gold, margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Bell size={18} /> Notificar Usuário Ativo
+            </h3>
+            <p style={{ color: COLORS.muted, fontSize: '12px', marginBottom: '15px' }}>
+              Envia uma janela de pop-up na área de trabalho da máquina remota.
+            </p>
+            
+            <textarea
+              value={notifyMessage}
+              onChange={(e) => setNotifyMessage(e.target.value)}
+              placeholder="Digite o aviso para o usuário..."
+              style={styles.textArea}
+            />
+
+            <div style={styles.modalActions}>
+              <button 
+                onClick={() => setModalNotifyOpen(false)} 
+                disabled={notifyLoading} 
+                style={styles.modalCancelBtn}
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={handleSendNotification} 
+                disabled={notifyLoading} 
+                style={{ ...styles.modalSaveBtn, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+              >
+                {notifyLoading ? 'Enviando...' : 'Disparar Alerta'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1274,6 +1643,19 @@ const styles = {
     fontSize: '11px',
     cursor: 'pointer',
     fontWeight: '500'
+  },
+  clearRecentBtn: {
+    background: 'none',
+    border: 'none',
+    color: COLORS.danger,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '4px 6px',
+    borderRadius: '50%',
+    marginLeft: '2px',
+    opacity: 0.85
   },
   groupsBox: { backgroundColor: COLORS.cell, padding: '12px', borderRadius: '6px', border: `1px solid ${COLORS.border}` }, groupItem: { color: COLORS.muted, fontSize: '12px', marginBottom: '6px', borderBottom: `1px solid ${COLORS.border}`, paddingBottom: '6px' }, hintText: { color: COLORS.muted, fontSize: '12px' },
   
